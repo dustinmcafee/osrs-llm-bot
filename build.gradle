@@ -1,0 +1,53 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+group = 'com.osrsbot'
+version = '1.0.0'
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://repo.runelite.net' }
+}
+
+dependencies {
+    compileOnly 'net.runelite:client:latest.release'
+    compileOnly 'org.projectlombok:lombok:1.18.30'
+    annotationProcessor 'org.projectlombok:lombok:1.18.30'
+
+    implementation 'com.anthropic:anthropic-java:2.14.0'
+    implementation 'com.google.code.gson:gson:2.10.1'
+
+    // For the dev test launcher
+    testImplementation 'net.runelite:client:latest.release'
+    testImplementation 'net.runelite:jshell:latest.release'
+}
+
+shadowJar {
+    archiveClassifier.set('')
+    dependencies {
+        include(dependency('com.anthropic:.*'))
+        include(dependency('com.google.code.gson:.*'))
+    }
+}
+
+tasks.named('jar') {
+    enabled = false
+}
+
+tasks.named('build') {
+    dependsOn shadowJar
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+// Dev task: launches RuneLite with the plugin loaded
+tasks.register('runClient', JavaExec) {
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.osrsbot.claude.PluginLauncher'
+    jvmArgs = ['-ea']
+}

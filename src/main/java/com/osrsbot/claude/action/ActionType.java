@@ -1,0 +1,25 @@
+package com.osrsbot.claude.action;
+
+public enum ActionType
+{
+    WALK_TO,
+    INTERACT_NPC,
+    INTERACT_OBJECT,
+    USE_ITEM,
+    USE_ITEM_ON_ITEM,
+    USE_ITEM_ON_NPC,
+    USE_ITEM_ON_OBJECT,
+    EQUIP_ITEM,
+    DROP_ITEM,
+    PICKUP_ITEM,
+    EAT_FOOD,
+    TOGGLE_PRAYER,
+    TOGGLE_RUN,
+    SELECT_DIALOGUE,
+    CONTINUE_DIALOGUE,
+    WAIT,
+    SPECIAL_ATTACK,
+    BANK_DEPOSIT,
+    BANK_WITHDRAW,
+    BANK_CLOSE
+}
