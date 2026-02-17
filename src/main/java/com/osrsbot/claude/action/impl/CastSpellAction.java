@@ -1,0 +1,172 @@
+package com.osrsbot.claude.action.impl;
+
+import com.osrsbot.claude.action.ActionResult;
+import com.osrsbot.claude.action.ActionType;
+import com.osrsbot.claude.action.BotAction;
+import com.osrsbot.claude.human.HumanSimulator;
+import com.osrsbot.claude.util.ClientThreadRunner;
+import com.osrsbot.claude.util.NpcUtils;
+import net.runelite.api.*;
+import net.runelite.api.widgets.Widget;
+import net.runelite.client.callback.ClientThread;
+
+import java.awt.Point;
+import java.awt.Rectangle;
+import java.awt.event.KeyEvent;
+
+/**
+ * Casts a spell from the spellbook, optionally targeting an NPC.
+ *
+ * Phase 1 (client thread): Check if magic tab is open, find the spell widget
+ * by searching spellbook widget children for matching spell name.
+ * Phase 2 (background thread): Click the spell via humanized mouse movement.
+ * If targeting an NPC, find and click the NPC afterward.
+ */
+public class CastSpellAction
+{
+    private static final int SPELLBOOK_GROUP_ID = 218;
+
+    public static ActionResult execute(Client client, HumanSimulator human, NpcUtils npcUtils,
+                                       ClientThread clientThread, BotAction action)
+    {
+        String spellName = action.getName();
+        if (spellName == null || spellName.isEmpty())
+        {
+            return ActionResult.failure(ActionType.CAST_SPELL, "No spell name provided");
+        }
+
+        // Phase 1: Check if magic tab is open on client thread
+        Boolean tabOpen;
+        try
+        {
+            tabOpen = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Widget spellbook = client.getWidget(SPELLBOOK_GROUP_ID, 0);
+                return spellbook != null && !spellbook.isHidden();
+            });
+        }
+        catch (Throwable t)
+        {
+            return ActionResult.failure(ActionType.CAST_SPELL, "Spellbook check failed: " + t.getMessage());
+        }
+
+        // If magic tab isn't open, press the hotkey to open it
+        if (!tabOpen)
+        {
+            human.pressKey(KeyEvent.VK_F6); // Magic tab hotkey
+            human.shortPause();
+        }
+
+        // Find the spell widget on client thread
+        Object[] spellData;
+        try
+        {
+            spellData = ClientThreadRunner.runOnClientThread(clientThread, () ->
+                findSpellWidget(client, spellName));
+        }
+        catch (Throwable t)
+        {
+            return ActionResult.failure(ActionType.CAST_SPELL, "Spell lookup failed: " + t.getMessage());
+        }
+
+        if (spellData == null)
+        {
+            return ActionResult.failure(ActionType.CAST_SPELL, "Spell not found: " + spellName);
+        }
+
+        Point spellPoint = (Point) spellData[0];
+
+        // Phase 2: Click the spell widget with humanized mouse
+        human.moveAndClick(spellPoint.x, spellPoint.y);
+        human.shortPause();
+
+        // If targeting an NPC, find and click it
+        String targetOption = action.getOption();
+        String targetNpc = action.getNpc();
+        if (targetNpc != null && !targetNpc.isEmpty())
+        {
+            Object[] npcData;
+            try
+            {
+                npcData = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    NPC npc = npcUtils.findNearest(client, targetNpc);
+                    if (npc == null) return null;
+
+                    Point screenPoint = null;
+                    if (npc.getCanvasTilePoly() != null)
+                    {
+                        Rectangle bounds = npc.getCanvasTilePoly().getBounds();
+                        screenPoint = new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                    }
+                    return new Object[]{ screenPoint };
+                });
+            }
+            catch (Throwable t)
+            {
+                return ActionResult.failure(ActionType.CAST_SPELL, "NPC target lookup failed: " + t.getMessage());
+            }
+
+            if (npcData == null)
+            {
+                return ActionResult.failure(ActionType.CAST_SPELL, "Target NPC not found: " + targetNpc);
+            }
+
+            Point npcPoint = (Point) npcData[0];
+            if (npcPoint != null)
+            {
+                human.moveAndClick(npcPoint.x, npcPoint.y);
+                human.shortPause();
+            }
+        }
+
+        return ActionResult.success(ActionType.CAST_SPELL);
+    }
+
+    /**
+     * Searches the spellbook widget group for a spell matching the given name.
+     * Returns Object[]{ Point screenCenter } or null if not found.
+     */
+    private static Object[] findSpellWidget(Client client, String spellName)
+    {
+        // The spellbook has multiple children, each representing a spell
+        // We search all children of the spellbook group
+        for (int childIdx = 0; childIdx < 200; childIdx++)
+        {
+            Widget child = client.getWidget(SPELLBOOK_GROUP_ID, childIdx);
+            if (child == null) continue;
+            if (child.isHidden()) continue;
+
+            // Check the widget's actions for "Cast <spell name>"
+            String[] actions = child.getActions();
+            if (actions != null)
+            {
+                for (String act : actions)
+                {
+                    if (act != null && act.toLowerCase().contains(spellName.toLowerCase()))
+                    {
+                        Rectangle bounds = child.getBounds();
+                        if (bounds != null)
+                        {
+                            return new Object[]{
+                                new Point((int) bounds.getCenterX(), (int) bounds.getCenterY())
+                            };
+                        }
+                    }
+                }
+            }
+
+            // Also check widget name/text
+            String widgetName = child.getName();
+            if (widgetName != null && widgetName.toLowerCase().contains(spellName.toLowerCase()))
+            {
+                Rectangle bounds = child.getBounds();
+                if (bounds != null)
+                {
+                    return new Object[]{
+                        new Point((int) bounds.getCenterX(), (int) bounds.getCenterY())
+                    };
+                }
+            }
+        }
+        return null;
+    }
+}

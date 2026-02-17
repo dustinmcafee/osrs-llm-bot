@@ -157,6 +157,66 @@ public class MouseController
         ));
     }
 
+    /**
+     * Holds a key down for a specified duration, then releases it.
+     * Dispatches KEY_PRESSED immediately, sleeps for the duration,
+     * then dispatches KEY_RELEASED — mimicking a human holding an arrow key.
+     */
+    public void holdKey(int keyCode, int durationMs)
+    {
+        if (canvas == null) return;
+        long now = System.currentTimeMillis();
+
+        postEvent(new java.awt.event.KeyEvent(
+            canvas, java.awt.event.KeyEvent.KEY_PRESSED, now, 0,
+            keyCode, java.awt.event.KeyEvent.CHAR_UNDEFINED
+        ));
+
+        sleep(durationMs);
+
+        postEvent(new java.awt.event.KeyEvent(
+            canvas, java.awt.event.KeyEvent.KEY_RELEASED, System.currentTimeMillis(), 0,
+            keyCode, java.awt.event.KeyEvent.CHAR_UNDEFINED
+        ));
+    }
+
+    /**
+     * Types a string character by character with humanized inter-key delays.
+     * Each character dispatches KEY_PRESSED, KEY_TYPED, KEY_RELEASED events
+     * so the game client sees realistic keyboard input.
+     */
+    public void typeText(String text)
+    {
+        if (canvas == null || text == null) return;
+
+        for (char c : text.toCharArray())
+        {
+            long now = System.currentTimeMillis();
+            int keyCode = java.awt.event.KeyEvent.getExtendedKeyCodeForChar(c);
+
+            postEvent(new java.awt.event.KeyEvent(
+                canvas, java.awt.event.KeyEvent.KEY_PRESSED, now, 0,
+                keyCode, c
+            ));
+            postEvent(new java.awt.event.KeyEvent(
+                canvas, java.awt.event.KeyEvent.KEY_TYPED, now + 10, 0,
+                java.awt.event.KeyEvent.VK_UNDEFINED, c
+            ));
+
+            int holdDelay = 30 + random.nextInt(60);
+            sleep(holdDelay);
+
+            postEvent(new java.awt.event.KeyEvent(
+                canvas, java.awt.event.KeyEvent.KEY_RELEASED, System.currentTimeMillis(), 0,
+                keyCode, c
+            ));
+
+            // Inter-key delay — Gaussian distributed like real typing
+            int typingDelay = 30 + random.nextInt(90);
+            sleep(typingDelay);
+        }
+    }
+
     public Point getMousePosition()
     {
         return new Point(currentX, currentY);

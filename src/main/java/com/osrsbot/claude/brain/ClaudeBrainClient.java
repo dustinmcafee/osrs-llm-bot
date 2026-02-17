@@ -16,7 +16,7 @@ import java.util.stream.Collectors;
 public class ClaudeBrainClient
 {
     private AnthropicClient anthropicClient;
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private ExecutorService executor;
     private String model;
     private int maxTokens;
     private String systemPrompt;
@@ -28,6 +28,12 @@ public class ClaudeBrainClient
         this.anthropicClient = AnthropicOkHttpClient.builder()
             .apiKey(apiKey)
             .build();
+
+        // Recreate executor in case shutdown() was called previously (plugin toggle)
+        if (executor == null || executor.isShutdown())
+        {
+            executor = Executors.newSingleThreadExecutor();
+        }
     }
 
     public void setSystemPrompt(String systemPrompt)
@@ -89,6 +95,7 @@ public class ClaudeBrainClient
 
     public void shutdown()
     {
+        if (executor == null) return;
         executor.shutdown();
         try
         {

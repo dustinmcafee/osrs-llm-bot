@@ -27,7 +27,7 @@ public class HumanSimulator
     @Inject
     private ClientThread clientThread;
 
-    private boolean initialized = false;
+    private volatile boolean initialized = false;
 
     public void initialize(int mouseSpeed, int minDelay, int maxDelay)
     {
@@ -112,6 +112,36 @@ public class HumanSimulator
     {
         if (!initialized) return;
         mouseController.pressKey(keyCode);
+    }
+
+    /**
+     * Holds a key down for a duration then releases — simulates a human
+     * holding an arrow key to rotate the camera.
+     */
+    public void holdKey(int keyCode, int durationMs)
+    {
+        if (!initialized) return;
+        mouseController.holdKey(keyCode, durationMs);
+    }
+
+    /**
+     * Types a string character by character with humanized inter-key delays —
+     * simulates a human typing into a search box or chat.
+     */
+    public void typeText(String text)
+    {
+        if (!initialized) return;
+        mouseController.typeText(text);
+    }
+
+    /**
+     * Moves mouse to target and right-clicks (no menu selection).
+     */
+    public void moveAndRightClick(int canvasX, int canvasY)
+    {
+        if (!initialized) return;
+        moveMouse(canvasX, canvasY);
+        rightClick();
     }
 
     public void shortPause()

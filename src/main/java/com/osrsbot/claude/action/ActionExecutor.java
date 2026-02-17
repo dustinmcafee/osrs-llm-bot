@@ -8,6 +8,7 @@ import com.osrsbot.claude.util.ObjectUtils;
 import com.osrsbot.claude.util.TileUtils;
 import net.runelite.api.Client;
 import net.runelite.client.callback.ClientThread;
+import net.runelite.client.game.ItemManager;
 import lombok.extern.slf4j.Slf4j;
 
 import javax.inject.Inject;
@@ -45,19 +46,33 @@ public class ActionExecutor
     @Inject
     private ClientThread clientThread;
 
-    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "BotActionExecutor");
-        t.setDaemon(true);
-        t.setUncaughtExceptionHandler((thread, throwable) -> {
-            System.err.println("[ClaudeBot] UNCAUGHT in " + thread.getName() + ": " + throwable);
-            throwable.printStackTrace(System.err);
-        });
-        return t;
-    });
+    @Inject
+    private ItemManager itemManager;
+
+    private ExecutorService executor;
 
     private volatile BotAction currentAction;
     private volatile ActionResult lastResult;
     private final AtomicBoolean executing = new AtomicBoolean(false);
+
+    /**
+     * Ensures the executor is running. Called on first tick or after a plugin toggle.
+     */
+    private void ensureExecutor()
+    {
+        if (executor == null || executor.isShutdown())
+        {
+            executor = Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "BotActionExecutor");
+                t.setDaemon(true);
+                t.setUncaughtExceptionHandler((thread, throwable) -> {
+                    System.err.println("[ClaudeBot] UNCAUGHT in " + thread.getName() + ": " + throwable);
+                    throwable.printStackTrace(System.err);
+                });
+                return t;
+            });
+        }
+    }
 
     /**
      * Called from game tick. If not already executing an action, dequeues the next one
@@ -66,6 +81,8 @@ public class ActionExecutor
      */
     public void tick()
     {
+        ensureExecutor();
+
         if (executing.get())
         {
             return;
@@ -153,6 +170,24 @@ public class ActionExecutor
                 return UseItemOnNpcAction.execute(client, humanSimulator, itemUtils, npcUtils, clientThread, action);
             case USE_ITEM_ON_OBJECT:
                 return UseItemOnObjectAction.execute(client, humanSimulator, itemUtils, objectUtils, clientThread, action);
+            case CLICK_WIDGET:
+                return ClickWidgetAction.execute(humanSimulator, action);
+            case CAST_SPELL:
+                return CastSpellAction.execute(client, humanSimulator, npcUtils, clientThread, action);
+            case MAKE_ITEM:
+                return MakeItemAction.execute(client, humanSimulator, itemManager, clientThread, action);
+            case SHOP_BUY:
+                return ShopBuyAction.execute(client, humanSimulator, itemManager, clientThread, action);
+            case SHOP_SELL:
+                return ShopSellAction.execute(client, humanSimulator, itemManager, clientThread, action);
+            case MINIMAP_WALK:
+                return MinimapWalkAction.execute(client, humanSimulator, clientThread, action);
+            case ROTATE_CAMERA:
+                return RotateCameraAction.execute(client, humanSimulator, clientThread, action);
+            case GE_BUY:
+                return GeBuyAction.execute(client, humanSimulator, clientThread, action);
+            case GE_SELL:
+                return GeSellAction.execute(client, humanSimulator, itemManager, clientThread, action);
             default:
                 return ActionResult.failure(action.getType(), "Unimplemented action type");
         }
@@ -175,6 +210,7 @@ public class ActionExecutor
 
     public void shutdown()
     {
+        if (executor == null) return;
         executor.shutdown();
         try
         {

@@ -138,12 +138,80 @@ public class GameStateSerializer
     private void serializeEnvironment(StringBuilder sb, EnvironmentState env)
     {
         sb.append("[ENVIRONMENT] Region:").append(env.getRegionId())
-            .append(" Plane:").append(env.getPlane());
+            .append(" Plane:").append(env.getPlane())
+            .append(" Tab:").append(env.getActiveTabName());
         if (env.isInInstance()) sb.append(" [INSTANCED]");
         if (env.isBankOpen()) sb.append(" [BANK_OPEN]");
-        if (env.isDialogOpen()) sb.append(" [DIALOG_OPEN]");
         if (env.isShopOpen()) sb.append(" [SHOP_OPEN]");
+        if (env.isMakeInterfaceOpen()) sb.append(" [MAKE_INTERFACE_OPEN]");
+        if (env.isGrandExchangeOpen()) sb.append(" [GE_OPEN]");
         sb.append(" Tick:").append(env.getGameTickCount());
         sb.append("\n");
+
+        // Interaction target — who/what the player is currently engaged with
+        if (env.getInteractingWith() != null)
+        {
+            sb.append("[INTERACTING] ").append(env.getInteractingWith()).append("\n");
+        }
+
+        // Hint arrow — the game's "do this next" indicator (critical for tutorials and quests)
+        if (env.getHintArrowType() != null)
+        {
+            sb.append("[HINT_ARROW] ").append(env.getHintArrowType());
+            sb.append(" -> ").append(env.getHintArrowTarget());
+            sb.append(" at (").append(env.getHintArrowX()).append(",").append(env.getHintArrowY()).append(")");
+            sb.append(" *** THIS IS WHAT YOU SHOULD INTERACT WITH NEXT ***\n");
+        }
+
+        // Tutorial instruction overlay — literal text telling the player what to do
+        if (env.getTutorialInstruction() != null)
+        {
+            sb.append("[INSTRUCTION] ").append(env.getTutorialInstruction()).append("\n");
+        }
+
+        // Tutorial island progress (0 = not on tutorial, 1000 = complete)
+        if (env.getTutorialProgress() > 0 && env.getTutorialProgress() < 1000)
+        {
+            sb.append("[TUTORIAL_PROGRESS] step:").append(env.getTutorialProgress()).append("\n");
+        }
+
+        // Dialogue details — critical for the brain to handle conversations correctly
+        if (env.isDialogOpen() && env.getDialogueType() != null)
+        {
+            sb.append("[DIALOGUE] type:").append(env.getDialogueType());
+            if (env.getDialogueSpeaker() != null)
+            {
+                sb.append(" speaker:\"").append(env.getDialogueSpeaker()).append("\"");
+            }
+            if (env.getDialogueText() != null)
+            {
+                sb.append(" text:\"").append(env.getDialogueText()).append("\"");
+            }
+            if (env.getDialogueType().equals("npc_continue") || env.getDialogueType().equals("player_continue")
+                || env.getDialogueType().equals("sprite_continue"))
+            {
+                sb.append(" -> Use CONTINUE_DIALOGUE to proceed");
+            }
+            sb.append("\n");
+
+            if (env.getDialogueOptions() != null && !env.getDialogueOptions().isEmpty())
+            {
+                sb.append("[DIALOGUE_OPTIONS] ");
+                sb.append(String.join(" | ", env.getDialogueOptions()));
+                sb.append(" -> Use SELECT_DIALOGUE with option number\n");
+            }
+        }
+        else if (env.isDialogOpen())
+        {
+            sb.append("[DIALOGUE] open (use CONTINUE_DIALOGUE)\n");
+        }
+
+        // Recent game messages — feedback on what happened (failures, instructions, etc.)
+        if (env.getRecentGameMessages() != null && !env.getRecentGameMessages().isEmpty())
+        {
+            sb.append("[GAME_MESSAGES] ");
+            sb.append(String.join(" | ", env.getRecentGameMessages()));
+            sb.append("\n");
+        }
     }
 }

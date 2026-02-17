@@ -14,8 +14,18 @@ public class DialogueAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, ClientThread clientThread, BotAction action)
     {
-        int optionIndex = action.getX();
-        if (optionIndex <= 0) optionIndex = 1;
+        // The AI sends the option number in the "option" field (parsed as a String)
+        int optionIndex = 1;
+        try
+        {
+            String opt = action.getOption();
+            if (opt != null && !opt.isEmpty())
+            {
+                optionIndex = Integer.parseInt(opt);
+            }
+        }
+        catch (NumberFormatException ignored) {}
+        if (optionIndex < 1) optionIndex = 1;
         final int idx = optionIndex;
 
         // Phase 1: Widget lookup on client thread
@@ -28,9 +38,11 @@ public class DialogueAction
 
                 Widget[] children = options.getChildren();
                 if (children == null || children.length == 0) return new Object[]{ "NO_CHILDREN" };
-                if (idx > children.length) return new Object[]{ "OUT_OF_RANGE" };
+                // Options are 1-indexed and map directly to children[] indices
+                // (child 0 is the title "Select an Option", real options start at child 1)
+                if (idx < 1 || idx >= children.length) return new Object[]{ "OUT_OF_RANGE" };
 
-                Widget target = children[idx - 1];
+                Widget target = children[idx];
                 java.awt.Rectangle bounds = target.getBounds();
                 if (bounds == null) return new Object[]{ "NO_BOUNDS" };
 

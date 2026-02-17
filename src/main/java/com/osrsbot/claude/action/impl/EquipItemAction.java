@@ -10,20 +10,33 @@ import net.runelite.api.Client;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 
+/**
+ * Equips an item from the inventory by left-clicking it — the same way a human does it.
+ *
+ * In OSRS, equippable items have Wield/Wear/Equip as their default left-click action,
+ * so a single left-click equips them. No right-click menu navigation needed.
+ */
 public class EquipItemAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
-        // Phase 1: Widget lookup on client thread
-        java.awt.Point point;
+        // Phase 1: Find item widget on client thread
+        Object[] lookupData;
         try
         {
-            point = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+            lookupData = ClientThreadRunner.runOnClientThread(clientThread, () -> {
                 Widget item = itemUtils.findInInventory(client, action.getName());
                 if (item == null) return null;
+
                 java.awt.Rectangle bounds = item.getBounds();
                 if (bounds == null) return null;
-                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+
+                // Return both the center point and the slot index for debugging
+                return new Object[]{
+                    new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY()),
+                    item.getIndex(),
+                    bounds
+                };
             });
         }
         catch (Throwable t)
@@ -32,42 +45,22 @@ public class EquipItemAction
             return ActionResult.failure(ActionType.EQUIP_ITEM, "Lookup failed: " + t.getMessage());
         }
 
-        if (point == null)
+        if (lookupData == null)
         {
             return ActionResult.failure(ActionType.EQUIP_ITEM, "Item not found: " + action.getName());
         }
 
-        // Phase 2: Right-click select on background thread (MenuInteractor handles client thread internally)
-        boolean selected = human.moveAndRightClickSelect(client, point.x, point.y, "Wield", action.getName());
-        if (!selected)
-        {
-            // Re-lookup position (widget may have shifted)
-            java.awt.Point point2;
-            try
-            {
-                point2 = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                    Widget item = itemUtils.findInInventory(client, action.getName());
-                    if (item == null) return null;
-                    java.awt.Rectangle bounds = item.getBounds();
-                    if (bounds == null) return null;
-                    return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
-                });
-            }
-            catch (Throwable t)
-            {
-                return ActionResult.failure(ActionType.EQUIP_ITEM, "Re-lookup failed: " + t.getMessage());
-            }
+        java.awt.Point point = (java.awt.Point) lookupData[0];
+        int slotIndex = (int) lookupData[1];
+        java.awt.Rectangle bounds = (java.awt.Rectangle) lookupData[2];
 
-            if (point2 != null)
-            {
-                selected = human.moveAndRightClickSelect(client, point2.x, point2.y, "Wear", action.getName());
-            }
-        }
+        System.out.println("[ClaudeBot] EquipItem '" + action.getName() + "' slot=" + slotIndex
+            + " bounds=(" + bounds.x + "," + bounds.y + "," + bounds.width + "," + bounds.height + ")"
+            + " click=(" + point.x + "," + point.y + ")");
 
-        if (!selected)
-        {
-            return ActionResult.failure(ActionType.EQUIP_ITEM, "Equip option not found for: " + action.getName());
-        }
+        // Phase 2: Left-click the item (equippable items equip on left-click)
+        human.moveAndClick(point.x, point.y);
+        human.shortPause();
 
         return ActionResult.success(ActionType.EQUIP_ITEM);
     }

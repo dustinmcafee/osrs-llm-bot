@@ -21,5 +21,14 @@ public enum ActionType
     SPECIAL_ATTACK,
     BANK_DEPOSIT,
     BANK_WITHDRAW,
-    BANK_CLOSE
+    BANK_CLOSE,
+    CLICK_WIDGET,
+    CAST_SPELL,
+    MAKE_ITEM,
+    SHOP_BUY,
+    SHOP_SELL,
+    MINIMAP_WALK,
+    ROTATE_CAMERA,
+    GE_BUY,
+    GE_SELL
 }
