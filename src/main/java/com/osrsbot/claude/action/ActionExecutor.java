@@ -1,5 +1,6 @@
 package com.osrsbot.claude.action;
 
+import com.osrsbot.claude.ClaudeBotConfig;
 import com.osrsbot.claude.action.impl.*;
 import com.osrsbot.claude.human.HumanSimulator;
 import com.osrsbot.claude.util.ItemUtils;
@@ -51,6 +52,9 @@ public class ActionExecutor
 
     @Inject
     private ItemManager itemManager;
+
+    @Inject
+    private ClaudeBotConfig config;
 
     private ExecutorService executor;
 
@@ -254,7 +258,8 @@ public class ActionExecutor
             case SET_AUTOCAST:
                 return SetAutocastAction.execute(client, humanSimulator, clientThread, action);
             case WORLD_HOP:
-                return WorldHopAction.execute(client, humanSimulator, clientThread, action);
+                return WorldHopAction.execute(client, humanSimulator, clientThread, action,
+                    config.worldHopEnabled(), config.worldHopType());
             default:
                 return ActionResult.failure(action.getType(), "Unimplemented action type");
         }

@@ -9,6 +9,7 @@ import java.util.List;
 public class EnvironmentState
 {
     private int regionId;
+    private String regionName;
     private int plane;
     private boolean isInInstance;
     private boolean isBankOpen;
@@ -64,4 +65,14 @@ public class EnvironmentState
 
     // NPCs currently targeting (attacking) the player
     private List<String> attackingNpcs;
+
+    // Bank contents (when bank is open) — grouped "ItemName(xQty)" strings
+    private List<String> bankContents;
+    private int bankUniqueItems;
+
+    // Shop contents (when shop is open) — "ItemName(xQty)" strings
+    private List<String> shopContents;
+
+    // Grand Exchange active offers — "BUY/SELL ItemName qty/total @price" strings
+    private List<String> geOffers;
 }

@@ -15,14 +15,36 @@ public class ResponseParser
 {
     private final Gson gson = new Gson();
 
+    // Last extracted goal from Claude's response
+    private volatile String lastGoal = null;
+
+    /**
+     * Returns the goal extracted from the most recent parse, or null if none.
+     */
+    public String getLastGoal()
+    {
+        return lastGoal;
+    }
+
     public List<BotAction> parse(String response)
     {
         List<BotAction> actions = new ArrayList<>();
+        lastGoal = null;
 
         try
         {
             String cleaned = extractJsonArray(response);
             JsonArray array = JsonParser.parseString(cleaned).getAsJsonArray();
+
+            // Extract goal from first action object if present
+            if (array.size() > 0)
+            {
+                JsonObject first = array.get(0).getAsJsonObject();
+                if (first.has("goal"))
+                {
+                    lastGoal = first.get("goal").getAsString();
+                }
+            }
 
             for (JsonElement element : array)
             {

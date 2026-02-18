@@ -21,7 +21,7 @@ public class InteractObjectAction
         try
         {
             lookupData = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                TileObject obj = objectUtils.findNearest(client, action.getName());
+                TileObject obj = objectUtils.findNearest(client, action.getName(), action.getOption());
                 if (obj == null) return null;
 
                 int actionIndex = objectUtils.getActionIndex(client, obj, action.getOption());
@@ -70,25 +70,70 @@ public class InteractObjectAction
             human.shortPause();
         }
 
-        // Phase 3: Menu action on client thread (fire-and-forget)
+        // Phase 3: Menu action on client thread — prefer real menu entries (correct object ID for
+        // overlapping objects like staircases) with fallback to our constructed action.
         String objName = action.getName();
         String option = action.getOption();
 
         System.out.println("[ClaudeBot] Object menuAction: sceneXY=(" + sceneX + "," + sceneY +
             ") id=" + objId + " action=" + menuAction + " option=" + option + " name=" + objName);
 
+        final int fallbackSceneX = sceneX;
+        final int fallbackSceneY = sceneY;
+        final int fallbackObjId = objId;
+        final MenuAction fallbackMenuAction = menuAction;
+
         clientThread.invokeLater(() -> {
             try
             {
-                client.menuAction(
-                    sceneX,         // param0
-                    sceneY,         // param1
-                    menuAction,     // type
-                    objId,          // identifier (object ID)
-                    -1,             // itemId
-                    option,         // option text
-                    objName         // target text
-                );
+                // Read the game's menu entries — they contain the correct object IDs
+                // for whatever is under the mouse cursor right now
+                net.runelite.api.MenuEntry[] entries = client.getMenuEntries();
+                net.runelite.api.MenuEntry match = null;
+                if (option != null && entries != null)
+                {
+                    for (net.runelite.api.MenuEntry entry : entries)
+                    {
+                        String entryOption = entry.getOption();
+                        String entryTarget = entry.getTarget();
+                        if (entryOption != null && entryOption.equalsIgnoreCase(option)
+                            && entryTarget != null && entryTarget.toLowerCase().contains(objName.toLowerCase()))
+                        {
+                            match = entry;
+                            break;
+                        }
+                    }
+                }
+
+                if (match != null)
+                {
+                    System.out.println("[ClaudeBot] Using real menu entry: id=" + match.getIdentifier()
+                        + " type=" + match.getType() + " option=" + match.getOption()
+                        + " target=" + match.getTarget());
+                    client.menuAction(
+                        match.getParam0(),
+                        match.getParam1(),
+                        match.getType(),
+                        match.getIdentifier(),
+                        -1,
+                        match.getOption(),
+                        match.getTarget()
+                    );
+                }
+                else
+                {
+                    // Fallback: use our constructed menu action (works for non-overlapping objects)
+                    System.out.println("[ClaudeBot] No matching menu entry found, using fallback id=" + fallbackObjId);
+                    client.menuAction(
+                        fallbackSceneX,
+                        fallbackSceneY,
+                        fallbackMenuAction,
+                        fallbackObjId,
+                        -1,
+                        option,
+                        objName
+                    );
+                }
             }
             catch (Throwable t)
             {

@@ -26,6 +26,64 @@ public class GameStateReader
 
     private int scanRadius = 25;
 
+    // Region ID → human-readable name mapping
+    private static final java.util.Map<Integer, String> REGION_NAMES = new java.util.HashMap<>();
+    static
+    {
+        REGION_NAMES.put(12850, "Lumbridge");
+        REGION_NAMES.put(12851, "Lumbridge East");
+        REGION_NAMES.put(12594, "Lumbridge Swamp");
+        REGION_NAMES.put(12595, "Lumbridge Swamp East");
+        REGION_NAMES.put(12849, "Lumbridge West");
+        REGION_NAMES.put(12342, "Varrock West");
+        REGION_NAMES.put(12854, "Varrock East");
+        REGION_NAMES.put(12853, "Varrock South");
+        REGION_NAMES.put(12598, "Grand Exchange");
+        REGION_NAMES.put(12597, "GE Area");
+        REGION_NAMES.put(11828, "Falador");
+        REGION_NAMES.put(11827, "Falador East");
+        REGION_NAMES.put(12084, "Falador West");
+        REGION_NAMES.put(11571, "Falador South");
+        REGION_NAMES.put(13104, "Al Kharid");
+        REGION_NAMES.put(13105, "Al Kharid Mine");
+        REGION_NAMES.put(13106, "Shantay Pass");
+        REGION_NAMES.put(12593, "Draynor Village");
+        REGION_NAMES.put(12336, "Tutorial Island");
+        REGION_NAMES.put(12337, "Tutorial Island");
+        REGION_NAMES.put(12442, "Edgeville");
+        REGION_NAMES.put(12443, "Edgeville");
+        REGION_NAMES.put(11062, "Barbarian Village");
+        REGION_NAMES.put(11318, "Barbarian Village");
+        REGION_NAMES.put(12340, "Wizard Tower");
+        REGION_NAMES.put(11826, "Rimmington");
+        REGION_NAMES.put(11570, "Port Sarim");
+        REGION_NAMES.put(11569, "Port Sarim Docks");
+        REGION_NAMES.put(10804, "Karamja");
+        REGION_NAMES.put(10805, "Karamja East");
+        REGION_NAMES.put(10547, "Brimhaven");
+        REGION_NAMES.put(11061, "Ice Mountain");
+        REGION_NAMES.put(10548, "Catherby");
+        REGION_NAMES.put(10292, "Seers Village");
+        REGION_NAMES.put(10036, "Ardougne East");
+        REGION_NAMES.put(9780, "Ardougne West");
+        REGION_NAMES.put(9781, "Yanille");
+        REGION_NAMES.put(11321, "Canifis");
+        REGION_NAMES.put(13878, "Burgh de Rott");
+        REGION_NAMES.put(14646, "Piscatoris");
+        REGION_NAMES.put(12341, "Champions Guild");
+        REGION_NAMES.put(12596, "Cooking Guild");
+        REGION_NAMES.put(12338, "Lumbridge Farm");
+        REGION_NAMES.put(12339, "Lumbridge Farms East");
+        REGION_NAMES.put(13100, "Duel Arena");
+        REGION_NAMES.put(9275, "Hosidius");
+        REGION_NAMES.put(7222, "Fossil Island");
+        REGION_NAMES.put(13358, "Mort Myre Swamp");
+        REGION_NAMES.put(11319, "Stronghold of Security");
+        REGION_NAMES.put(12855, "Varrock Palace");
+        REGION_NAMES.put(11574, "Monastery");
+        REGION_NAMES.put(11575, "Black Knights Fortress");
+    }
+
     /**
      * Combat detection via hitsplat events (most reliable signal).
      * Decremented each game tick, reset to COMBAT_TIMEOUT when player takes a hit.
@@ -41,6 +99,31 @@ public class GameStateReader
      */
     private final ConcurrentLinkedDeque<String> gameMessageBuffer = new ConcurrentLinkedDeque<>();
     private static final int MAX_MESSAGE_BUFFER = 20;
+
+    /**
+     * Separate buffer for game messages that indicate action failure.
+     * These get injected into [ACTION_RESULTS] as explicit FAILED entries.
+     */
+    private final ConcurrentLinkedDeque<String> failureMessageBuffer = new ConcurrentLinkedDeque<>();
+
+    private static final String[] FAILURE_PATTERNS = {
+        "I can't reach that",
+        "You can't reach that",
+        "Someone else is already",
+        "Already under attack",
+        "This rock contains no ore",
+        "There is no ore currently",
+        "The tree has been chopped down",
+        "You can't do that",
+        "Nothing interesting happens",
+        "I can't do that",
+        "You do not have enough",
+        "You need a higher",
+        "You don't have enough",
+        "You can't use that",
+        "That player is busy",
+        "You are already under attack",
+    };
 
     public void setScanRadius(int radius)
     {
@@ -59,6 +142,31 @@ public class GameStateReader
         {
             gameMessageBuffer.removeLast();
         }
+
+        // Check if this message indicates an action failure
+        for (String pattern : FAILURE_PATTERNS)
+        {
+            if (message.contains(pattern))
+            {
+                failureMessageBuffer.addFirst(message);
+                break;
+            }
+        }
+    }
+
+    /**
+     * Drains all pending failure messages (game messages that indicate action failure).
+     * Called by ClaudeBotPlugin to inject into [ACTION_RESULTS].
+     */
+    public List<String> drainFailureMessages()
+    {
+        List<String> failures = new ArrayList<>();
+        String msg;
+        while ((msg = failureMessageBuffer.pollFirst()) != null)
+        {
+            failures.add(msg);
+        }
+        return failures;
     }
 
     /**
@@ -67,6 +175,7 @@ public class GameStateReader
     public void clearMessages()
     {
         gameMessageBuffer.clear();
+        failureMessageBuffer.clear();
     }
 
     /**
@@ -194,6 +303,7 @@ public class GameStateReader
             .isMoving(isMoving)
             .isInCombat(isInCombat)
             .isIdle(isIdle)
+            .weight(client.getWeight())
             .attackLevel(client.getRealSkillLevel(Skill.ATTACK))
             .strengthLevel(client.getRealSkillLevel(Skill.STRENGTH))
             .defenceLevel(client.getRealSkillLevel(Skill.DEFENCE))
@@ -223,6 +333,30 @@ public class GameStateReader
             .boostedDefence(client.getBoostedSkillLevel(Skill.DEFENCE))
             .boostedRanged(client.getBoostedSkillLevel(Skill.RANGED))
             .boostedMagic(client.getBoostedSkillLevel(Skill.MAGIC))
+            // XP values
+            .attackXp(client.getSkillExperience(Skill.ATTACK))
+            .strengthXp(client.getSkillExperience(Skill.STRENGTH))
+            .defenceXp(client.getSkillExperience(Skill.DEFENCE))
+            .rangedXp(client.getSkillExperience(Skill.RANGED))
+            .magicXp(client.getSkillExperience(Skill.MAGIC))
+            .hitpointsXp(client.getSkillExperience(Skill.HITPOINTS))
+            .prayerXp(client.getSkillExperience(Skill.PRAYER))
+            .woodcuttingXp(client.getSkillExperience(Skill.WOODCUTTING))
+            .miningXp(client.getSkillExperience(Skill.MINING))
+            .fishingXp(client.getSkillExperience(Skill.FISHING))
+            .cookingXp(client.getSkillExperience(Skill.COOKING))
+            .firemakingXp(client.getSkillExperience(Skill.FIREMAKING))
+            .craftingXp(client.getSkillExperience(Skill.CRAFTING))
+            .smithingXp(client.getSkillExperience(Skill.SMITHING))
+            .fletchingXp(client.getSkillExperience(Skill.FLETCHING))
+            .slayerXp(client.getSkillExperience(Skill.SLAYER))
+            .farmingXp(client.getSkillExperience(Skill.FARMING))
+            .constructionXp(client.getSkillExperience(Skill.CONSTRUCTION))
+            .hunterXp(client.getSkillExperience(Skill.HUNTER))
+            .agilityXp(client.getSkillExperience(Skill.AGILITY))
+            .thievingXp(client.getSkillExperience(Skill.THIEVING))
+            .herbloreXp(client.getSkillExperience(Skill.HERBLORE))
+            .runecraftingXp(client.getSkillExperience(Skill.RUNECRAFT))
             .build();
     }
 
@@ -572,8 +706,51 @@ public class GameStateReader
         // NPCs targeting (attacking) the player
         List<String> attackingNpcs = readAttackingNpcs(local);
 
+        // Region name lookup
+        String regionName = REGION_NAMES.getOrDefault(regionId, null);
+
+        // Shop contents (when shop is open)
+        List<String> shopContents = null;
+        if (isWidgetGroupVisible(300))
+        {
+            shopContents = readShopContents();
+        }
+
+        // GE offer status
+        List<String> geOffers = null;
+        if (isGeOpen)
+        {
+            geOffers = readGeOffers();
+        }
+
+        // Bank contents (when bank is open)
+        List<String> bankContents = null;
+        int bankUniqueItems = 0;
+        ItemContainer bankContainer = client.getItemContainer(InventoryID.BANK);
+        if (bankContainer != null)
+        {
+            Map<String, Integer> bankGrouped = new LinkedHashMap<>();
+            Item[] bankItems = bankContainer.getItems();
+            for (Item item : bankItems)
+            {
+                if (item == null || item.getId() == -1 || item.getId() == 0) continue;
+                net.runelite.api.ItemComposition comp = itemManager.getItemComposition(item.getId());
+                String itemName = comp != null ? comp.getName() : "Unknown";
+                bankGrouped.merge(itemName, item.getQuantity(), Integer::sum);
+            }
+            bankUniqueItems = bankGrouped.size();
+            bankContents = new ArrayList<>();
+            int count = 0;
+            for (Map.Entry<String, Integer> entry : bankGrouped.entrySet())
+            {
+                bankContents.add(entry.getKey() + "(x" + entry.getValue() + ")");
+                if (++count >= 100) break;
+            }
+        }
+
         return EnvironmentState.builder()
             .regionId(regionId)
+            .regionName(regionName)
             .plane(client.getPlane())
             .isInInstance(client.isInInstancedRegion())
             .isBankOpen(client.getItemContainer(InventoryID.BANK) != null)
@@ -603,6 +780,10 @@ public class GameStateReader
             .attackStyleName(getAttackStyleName(attackStyleIndex))
             .activePrayers(activePrayers)
             .attackingNpcs(attackingNpcs)
+            .bankContents(bankContents)
+            .bankUniqueItems(bankUniqueItems)
+            .shopContents(shopContents)
+            .geOffers(geOffers)
             .build();
     }
 
@@ -791,6 +972,69 @@ public class GameStateReader
             // NPC iteration can fail during world loading
         }
         return attackers;
+    }
+
+    /**
+     * Reads items from the shop interface when it's open (widget group 300, child 16).
+     */
+    private List<String> readShopContents()
+    {
+        List<String> contents = new ArrayList<>();
+        try
+        {
+            Widget shopContainer = client.getWidget(300, 16);
+            if (shopContainer == null || shopContainer.isHidden()) return contents;
+
+            Widget[] children = shopContainer.getDynamicChildren();
+            if (children == null) return contents;
+
+            for (Widget child : children)
+            {
+                if (child == null || child.getItemId() <= 0) continue;
+                net.runelite.api.ItemComposition comp = itemManager.getItemComposition(child.getItemId());
+                String name = comp != null ? comp.getName() : "Unknown";
+                int qty = child.getItemQuantity();
+                contents.add(name + "(x" + qty + ")");
+            }
+        }
+        catch (Throwable t)
+        {
+            // Shop widget may not be available
+        }
+        return contents;
+    }
+
+    /**
+     * Reads Grand Exchange offer status via client API.
+     */
+    private List<String> readGeOffers()
+    {
+        List<String> offers = new ArrayList<>();
+        try
+        {
+            GrandExchangeOffer[] geOffers = client.getGrandExchangeOffers();
+            if (geOffers == null) return offers;
+
+            for (int i = 0; i < geOffers.length; i++)
+            {
+                GrandExchangeOffer offer = geOffers[i];
+                if (offer == null || offer.getState() == GrandExchangeOfferState.EMPTY) continue;
+
+                String state = offer.getState().name();
+                net.runelite.api.ItemComposition comp = itemManager.getItemComposition(offer.getItemId());
+                String name = comp != null ? comp.getName() : "ID:" + offer.getItemId();
+                int transferred = offer.getQuantitySold();
+                int total = offer.getTotalQuantity();
+                int price = offer.getPrice();
+
+                offers.add(state + " " + name + " " + transferred + "/" + total + " @" + price + "gp");
+            }
+        }
+        catch (Throwable t)
+        {
+            // GE API may not be available in all versions
+        }
+        return offers;
     }
 
     /**

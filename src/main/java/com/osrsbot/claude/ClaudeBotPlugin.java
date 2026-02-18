@@ -85,6 +85,7 @@ public class ClaudeBotPlugin extends Plugin
     private String lastSerializedState = "";
     private String lastClaudeResponse = "";
     private String botStatus = "Idle";
+    private volatile String currentGoal = "";
 
     @Override
     protected void startUp()
@@ -285,7 +286,8 @@ public class ClaudeBotPlugin extends Plugin
 
         // Prepend action results from the last batch so Claude knows what worked/failed
         List<ActionExecutor.ExecutedAction> results = actionExecutor.getAndClearResults();
-        if (!results.isEmpty())
+        List<String> gameFailures = gameStateReader.drainFailureMessages();
+        if (!results.isEmpty() || !gameFailures.isEmpty())
         {
             StringBuilder resultBlock = new StringBuilder();
             resultBlock.append("[ACTION_RESULTS] Your previous actions:\n");
@@ -294,7 +296,18 @@ public class ClaudeBotPlugin extends Plugin
                 resultBlock.append("  ").append(i + 1).append(". ")
                     .append(results.get(i).describe()).append("\n");
             }
+            // Append game-detected failures (async messages like "I can't reach that")
+            for (String failure : gameFailures)
+            {
+                resultBlock.append("  ** GAME_FAILURE: ").append(failure).append(" **\n");
+            }
             serialized = resultBlock.toString() + serialized;
+        }
+
+        // Prepend current goal so Claude maintains multi-step plans
+        if (currentGoal != null && !currentGoal.isEmpty())
+        {
+            serialized = "[CURRENT_GOAL] " + currentGoal + "\n" + serialized;
         }
 
         // Prepend compressed session notes so Claude remembers earlier activity
@@ -354,6 +367,14 @@ public class ClaudeBotPlugin extends Plugin
             for (BotAction action : actions)
             {
                 actionQueue.enqueue(action);
+            }
+
+            // Update persistent goal if Claude set one
+            String newGoal = responseParser.getLastGoal();
+            if (newGoal != null && !newGoal.isEmpty())
+            {
+                currentGoal = newGoal;
+                System.out.println("[ClaudeBot] Goal updated: " + currentGoal);
             }
 
             // Add to conversation history

@@ -53,4 +53,29 @@ public class PlayerState
     private int thievingLevel;
     private int herbloreLevel;
     private int runecraftingLevel;
+    private int weight; // kg, affects run energy drain
+    // XP values (raw experience points per skill)
+    private int attackXp;
+    private int strengthXp;
+    private int defenceXp;
+    private int rangedXp;
+    private int magicXp;
+    private int hitpointsXp;
+    private int prayerXp;
+    private int woodcuttingXp;
+    private int miningXp;
+    private int fishingXp;
+    private int cookingXp;
+    private int firemakingXp;
+    private int craftingXp;
+    private int smithingXp;
+    private int fletchingXp;
+    private int slayerXp;
+    private int farmingXp;
+    private int constructionXp;
+    private int hunterXp;
+    private int agilityXp;
+    private int thievingXp;
+    private int herbloreXp;
+    private int runecraftingXp;
 }

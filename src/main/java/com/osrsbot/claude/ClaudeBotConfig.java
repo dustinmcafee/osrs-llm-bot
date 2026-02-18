@@ -153,6 +153,41 @@ public interface ClaudeBotConfig extends Config
         return 25;
     }
 
+    @ConfigItem(
+        keyName = "worldHopEnabled",
+        name = "World Hop Enabled",
+        description = "Allow the bot to hop worlds when resources are contested",
+        section = behaviorSection,
+        position = 6
+    )
+    default boolean worldHopEnabled()
+    {
+        return false;
+    }
+
+    @ConfigItem(
+        keyName = "worldHopType",
+        name = "World Hop Type",
+        description = "Which worlds to hop to (Free, Members, or Any)",
+        section = behaviorSection,
+        position = 7
+    )
+    default WorldHopType worldHopType()
+    {
+        return WorldHopType.FREE;
+    }
+
+    enum WorldHopType
+    {
+        FREE("Free worlds only"),
+        MEMBERS("Members worlds only"),
+        ANY("Any world");
+
+        private final String description;
+        WorldHopType(String description) { this.description = description; }
+        @Override public String toString() { return description; }
+    }
+
     // --- Humanization ---
 
     @ConfigItem(

@@ -8,6 +8,19 @@ import java.util.stream.Collectors;
 @Singleton
 public class GameStateSerializer
 {
+    // Standard OSRS XP table: XP_TABLE[i] = total XP needed for level i+1 (index 0 = level 1)
+    private static final int[] XP_TABLE = {
+        0, 83, 174, 276, 388, 512, 650, 801, 969, 1154,           // 1-10
+        1358, 1584, 1833, 2107, 2411, 2746, 3115, 3523, 3973, 4470, // 11-20
+        5018, 5624, 6291, 7028, 7842, 8740, 9730, 10824, 12031, 13363, // 21-30
+        14833, 16456, 18247, 20224, 22406, 24815, 27473, 30408, 33648, 37224, // 31-40
+        41171, 45529, 50339, 55649, 61512, 67983, 75127, 83014, 91721, 101333, // 41-50
+        111945, 123660, 136594, 150872, 166636, 184040, 203254, 224466, 247886, 273742, // 51-60
+        302288, 333804, 368599, 407015, 449428, 496254, 547953, 605032, 668051, 737627, // 61-70
+        814445, 899257, 992895, 1096278, 1210421, 1336443, 1475581, 1629200, 1798808, 1986068, // 71-80
+        2192818, 2421087, 2673114, 2951373, 3258594, 3597792, 3972294, 4385776, 4842295, 5346332, // 81-90
+        5902831, 6517253, 7195629, 7944614, 8771558, 9684577, 10692629, 11805606, 13034431 // 91-99
+    };
     public String serialize(GameStateSnapshot snapshot)
     {
         StringBuilder sb = new StringBuilder();
@@ -32,6 +45,7 @@ public class GameStateSerializer
             .append(" | Prayer:").append(p.getCurrentPrayer()).append("/").append(p.getMaxPrayer())
             .append(" | Run:").append(p.getRunEnergy()).append("%")
             .append(p.isRunEnabled() ? " [ON]" : " [OFF]")
+            .append(" | Weight:").append(p.getWeight()).append("kg")
             .append(" | SpecAtk:").append(p.getSpecialAttackPercent()).append("%")
             .append(" | Pos:(").append(p.getWorldX()).append(",").append(p.getWorldY()).append(",").append(p.getPlane()).append(")")
             .append("\n");
@@ -78,6 +92,49 @@ public class GameStateSerializer
         {
             sb.append("[BOOSTED]").append(boosts).append("\n");
         }
+
+        // XP progress for non-zero skills
+        StringBuilder xp = new StringBuilder();
+        appendXp(xp, "Atk", p.getAttackXp(), p.getAttackLevel());
+        appendXp(xp, "Str", p.getStrengthXp(), p.getStrengthLevel());
+        appendXp(xp, "Def", p.getDefenceXp(), p.getDefenceLevel());
+        appendXp(xp, "Rng", p.getRangedXp(), p.getRangedLevel());
+        appendXp(xp, "Mag", p.getMagicXp(), p.getMagicLevel());
+        appendXp(xp, "HP", p.getHitpointsXp(), p.getHitpointsLevel());
+        appendXp(xp, "Pray", p.getPrayerXp(), p.getPrayerLevel());
+        appendXp(xp, "WC", p.getWoodcuttingXp(), p.getWoodcuttingLevel());
+        appendXp(xp, "Mine", p.getMiningXp(), p.getMiningLevel());
+        appendXp(xp, "Fish", p.getFishingXp(), p.getFishingLevel());
+        appendXp(xp, "Cook", p.getCookingXp(), p.getCookingLevel());
+        appendXp(xp, "FM", p.getFiremakingXp(), p.getFiremakingLevel());
+        appendXp(xp, "Craft", p.getCraftingXp(), p.getCraftingLevel());
+        appendXp(xp, "Smith", p.getSmithingXp(), p.getSmithingLevel());
+        appendXp(xp, "Fletch", p.getFletchingXp(), p.getFletchingLevel());
+        appendXp(xp, "Slay", p.getSlayerXp(), p.getSlayerLevel());
+        appendXp(xp, "Farm", p.getFarmingXp(), p.getFarmingLevel());
+        appendXp(xp, "Con", p.getConstructionXp(), p.getConstructionLevel());
+        appendXp(xp, "Hunt", p.getHunterXp(), p.getHunterLevel());
+        appendXp(xp, "Agi", p.getAgilityXp(), p.getAgilityLevel());
+        appendXp(xp, "Thiev", p.getThievingXp(), p.getThievingLevel());
+        appendXp(xp, "Herb", p.getHerbloreXp(), p.getHerbloreLevel());
+        appendXp(xp, "RC", p.getRunecraftingXp(), p.getRunecraftingLevel());
+        if (xp.length() > 0)
+        {
+            sb.append("[XP]").append(xp).append("\n");
+        }
+    }
+
+    private void appendXp(StringBuilder sb, String abbrev, int currentXp, int level)
+    {
+        if (currentXp <= 0) return;
+        if (level >= 99)
+        {
+            sb.append(" ").append(abbrev).append(":").append(currentXp).append("(MAX)");
+            return;
+        }
+        int nextLevelXp = XP_TABLE[level]; // XP_TABLE[level] = XP needed for level+1
+        int pct = (nextLevelXp > 0) ? (currentXp * 100) / nextLevelXp : 100;
+        sb.append(" ").append(abbrev).append(":").append(currentXp).append("/").append(nextLevelXp).append("(").append(pct).append("%)");
     }
 
     private void serializeInventory(StringBuilder sb, InventoryState inv)
@@ -123,34 +180,68 @@ public class GameStateSerializer
         if (entities == null || entities.isEmpty()) return;
 
         sb.append("[").append(label).append("] ");
-        // Limit to top 15 closest to save tokens
+
+        // Limit to top 15 closest, then deduplicate by name
         List<NearbyEntity> limited = entities.stream().limit(15).collect(Collectors.toList());
-        sb.append(limited.stream()
-            .map(e -> {
-                StringBuilder entry = new StringBuilder();
-                entry.append(e.getName());
-                if (e.getCombatLevel() > 0) entry.append("(lvl:").append(e.getCombatLevel()).append(")");
-                entry.append(" dist:").append(e.getDistance());
-                if (e.getQuantity() > 1) entry.append(" qty:").append(e.getQuantity());
-                if (e.getHealthRatio() > 0)
-                {
-                    int pct = (e.getHealthRatio() * 100) / e.getHealthScale();
-                    entry.append(" hp:").append(pct).append("%");
-                }
-                if (e.getActions() != null && !e.getActions().isEmpty())
-                {
-                    entry.append(" [").append(String.join(",", e.getActions())).append("]");
-                }
-                return entry.toString();
-            })
-            .collect(Collectors.joining(" | ")));
+
+        // Group by name to deduplicate (e.g. 4x "Oak tree" at same spot)
+        Map<String, List<NearbyEntity>> grouped = new java.util.LinkedHashMap<>();
+        for (NearbyEntity e : limited)
+        {
+            String key = e.getName() + (e.getCombatLevel() > 0 ? "(lvl:" + e.getCombatLevel() + ")" : "");
+            grouped.computeIfAbsent(key, k -> new java.util.ArrayList<>()).add(e);
+        }
+
+        List<String> entries = new java.util.ArrayList<>();
+        for (Map.Entry<String, List<NearbyEntity>> group : grouped.entrySet())
+        {
+            List<NearbyEntity> list = group.getValue();
+            NearbyEntity nearest = list.get(0); // already sorted by distance
+
+            StringBuilder entry = new StringBuilder();
+            if (list.size() > 1)
+            {
+                // Deduplicated: "Oak tree(x4) nearest:pos(3100,3200) dist:3 [Chop down]"
+                entry.append(group.getKey()).append("(x").append(list.size()).append(")");
+                entry.append(" nearest:pos(").append(nearest.getWorldX()).append(",").append(nearest.getWorldY()).append(")");
+                entry.append(" dist:").append(nearest.getDistance());
+            }
+            else
+            {
+                // Single entity: full detail
+                entry.append(group.getKey());
+                entry.append(" pos:(").append(nearest.getWorldX()).append(",").append(nearest.getWorldY()).append(")");
+                entry.append(" dist:").append(nearest.getDistance());
+            }
+            if (nearest.getQuantity() > 1) entry.append(" qty:").append(nearest.getQuantity());
+            if (nearest.getHealthRatio() > 0)
+            {
+                int pct = (nearest.getHealthRatio() * 100) / nearest.getHealthScale();
+                entry.append(" hp:").append(pct).append("%");
+            }
+            if (nearest.getActions() != null && !nearest.getActions().isEmpty())
+            {
+                entry.append(" [").append(String.join(",", nearest.getActions())).append("]");
+            }
+            entries.add(entry.toString());
+        }
+
+        sb.append(String.join(" | ", entries));
         sb.append("\n");
     }
 
     private void serializeEnvironment(StringBuilder sb, EnvironmentState env)
     {
-        sb.append("[ENVIRONMENT] Region:").append(env.getRegionId())
-            .append(" Plane:").append(env.getPlane())
+        sb.append("[ENVIRONMENT] Region:");
+        if (env.getRegionName() != null)
+        {
+            sb.append(env.getRegionName()).append("(").append(env.getRegionId()).append(")");
+        }
+        else
+        {
+            sb.append(env.getRegionId());
+        }
+        sb.append(" Plane:").append(env.getPlane())
             .append(" World:").append(env.getCurrentWorld())
             .append(" Tab:").append(env.getActiveTabName())
             .append(" Style:").append(env.getAttackStyleName());
@@ -246,6 +337,36 @@ public class GameStateSerializer
         {
             sb.append("[GAME_MESSAGES] ");
             sb.append(String.join(" | ", env.getRecentGameMessages()));
+            sb.append("\n");
+        }
+
+        // Bank contents (when bank is open)
+        if (env.getBankContents() != null && !env.getBankContents().isEmpty())
+        {
+            sb.append("[BANK_CONTENTS] (").append(env.getBankUniqueItems()).append(" unique items) ");
+            // Limit display to ~40 items to save tokens
+            List<String> display = env.getBankContents().stream().limit(40).collect(Collectors.toList());
+            sb.append(String.join(" | ", display));
+            if (env.getBankContents().size() > 40)
+            {
+                sb.append(" | ... (").append(env.getBankContents().size() - 40).append(" more)");
+            }
+            sb.append("\n");
+        }
+
+        // Shop contents (when shop is open)
+        if (env.getShopContents() != null && !env.getShopContents().isEmpty())
+        {
+            sb.append("[SHOP_CONTENTS] ");
+            sb.append(String.join(" | ", env.getShopContents()));
+            sb.append("\n");
+        }
+
+        // GE offers
+        if (env.getGeOffers() != null && !env.getGeOffers().isEmpty())
+        {
+            sb.append("[GE_OFFERS] ");
+            sb.append(String.join(" | ", env.getGeOffers()));
             sb.append("\n");
         }
     }

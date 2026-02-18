@@ -65,6 +65,7 @@ public class BankWithdrawAction
 
         // Phase 2: Right-click select on background thread
         int qty = action.getQuantity();
+        if (qty == 0) qty = 1; // Default to 1 when no quantity specified
         String withdrawOption = getWithdrawOption(qty);
         boolean needsTyping = isCustomQuantity(qty);
 
