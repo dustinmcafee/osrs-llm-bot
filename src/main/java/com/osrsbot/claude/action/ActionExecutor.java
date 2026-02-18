@@ -56,6 +56,9 @@ public class ActionExecutor
     @Inject
     private ClaudeBotConfig config;
 
+    @Inject
+    private com.osrsbot.claude.pathfinder.PathfinderService pathfinderService;
+
     private ExecutorService executor;
 
     private volatile BotAction currentAction;
@@ -260,6 +263,9 @@ public class ActionExecutor
             case WORLD_HOP:
                 return WorldHopAction.execute(client, humanSimulator, clientThread, action,
                     config.worldHopEnabled(), config.worldHopType());
+            case PATH_TO:
+                return PathToAction.execute(client, humanSimulator, pathfinderService,
+                    objectUtils, clientThread, action);
             default:
                 return ActionResult.failure(action.getType(), "Unimplemented action type");
         }

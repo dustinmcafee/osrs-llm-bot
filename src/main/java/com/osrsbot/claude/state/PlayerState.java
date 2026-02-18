@@ -54,6 +54,10 @@ public class PlayerState
     private int herbloreLevel;
     private int runecraftingLevel;
     private int weight; // kg, affects run energy drain
+    // Stuck detection
+    private int stuckTicks;     // 0 = not stuck, N = idle at same position for N ticks
+    private int destinationX;   // walk destination world X (0 if none)
+    private int destinationY;   // walk destination world Y (0 if none)
     // XP values (raw experience points per skill)
     private int attackXp;
     private int strengthXp;

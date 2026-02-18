@@ -92,6 +92,13 @@ public class GameStateReader
     private static final int COMBAT_TIMEOUT_TICKS = 8; // slowest monster attack speed
     private int combatCountdown = 0;
 
+    // Stuck detection: tracks position across ticks
+    private int lastWorldX = -1;
+    private int lastWorldY = -1;
+    private int stuckTicks = 0;
+    private int lastDestinationX = 0;
+    private int lastDestinationY = 0;
+
     /**
      * Event-based game message buffer. Messages are added by the plugin via
      * onGameMessage() when ChatMessage events fire. This is far more reliable
@@ -193,6 +200,58 @@ public class GameStateReader
     public void onGameTick()
     {
         combatCountdown = Math.max(combatCountdown - 1, 0);
+
+        // Stuck detection — track position across ticks
+        Player local = client.getLocalPlayer();
+        if (local == null)
+        {
+            stuckTicks = 0;
+            return;
+        }
+
+        WorldPoint pos = local.getWorldLocation();
+        int currentX = pos.getX();
+        int currentY = pos.getY();
+
+        // Track walking destination
+        LocalPoint destLocal = client.getLocalDestinationLocation();
+        if (destLocal != null)
+        {
+            WorldPoint destWorld = WorldPoint.fromLocal(client, destLocal);
+            lastDestinationX = destWorld.getX();
+            lastDestinationY = destWorld.getY();
+        }
+
+        if (currentX != lastWorldX || currentY != lastWorldY)
+        {
+            // Player moved — reset stuck counter
+            stuckTicks = 0;
+            lastWorldX = currentX;
+            lastWorldY = currentY;
+
+            // If moved and no active destination, player arrived — clear remembered dest
+            if (destLocal == null)
+            {
+                lastDestinationX = 0;
+                lastDestinationY = 0;
+            }
+        }
+        else
+        {
+            // Position unchanged — check if truly idle
+            boolean isAnimating = local.getAnimation() != AnimationID.IDLE;
+            boolean inCombat = combatCountdown > 0;
+
+            if (!isAnimating && !inCombat)
+            {
+                stuckTicks++;
+            }
+            else
+            {
+                // Stationary but doing something useful (mining, combat, etc.)
+                stuckTicks = 0;
+            }
+        }
     }
 
     public GameStateSnapshot capture()
@@ -219,7 +278,15 @@ public class GameStateReader
         }
 
         WorldPoint pos = local.getWorldLocation();
-        boolean isMoving = client.getLocalDestinationLocation() != null;
+        LocalPoint destLocal = client.getLocalDestinationLocation();
+        boolean isMoving = destLocal != null;
+        int destX = 0, destY = 0;
+        if (destLocal != null)
+        {
+            WorldPoint destWorld = WorldPoint.fromLocal(client, destLocal);
+            destX = destWorld.getX();
+            destY = destWorld.getY();
+        }
 
         // Multi-signal combat detection (matches RuneLite IdleNotifierPlugin approach).
         // npc.getInteracting() == local just means FACING — happens in dialogue too.
@@ -357,6 +424,10 @@ public class GameStateReader
             .thievingXp(client.getSkillExperience(Skill.THIEVING))
             .herbloreXp(client.getSkillExperience(Skill.HERBLORE))
             .runecraftingXp(client.getSkillExperience(Skill.RUNECRAFT))
+            // Stuck detection
+            .stuckTicks(stuckTicks)
+            .destinationX(destX != 0 ? destX : lastDestinationX)
+            .destinationY(destY != 0 ? destY : lastDestinationY)
             .build();
     }
 

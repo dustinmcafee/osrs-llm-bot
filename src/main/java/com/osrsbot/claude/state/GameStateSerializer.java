@@ -51,9 +51,33 @@ public class GameStateSerializer
             .append("\n");
 
         sb.append("[STATUS] ");
-        if (p.isIdle()) sb.append("IDLE");
+        if (p.isIdle())
+        {
+            if (p.getStuckTicks() >= 4)
+            {
+                sb.append("STUCK(").append(p.getStuckTicks()).append(" ticks)");
+                if (p.getDestinationX() != 0 || p.getDestinationY() != 0)
+                {
+                    sb.append(" intended_dest:(").append(p.getDestinationX())
+                      .append(",").append(p.getDestinationY()).append(")");
+                }
+                sb.append(" *** PATH BLOCKED — use PATH_TO or open nearby doors/gates ***");
+            }
+            else
+            {
+                sb.append("IDLE");
+            }
+        }
         else if (p.isInCombat()) sb.append("IN_COMBAT");
-        else if (p.isMoving()) sb.append("MOVING");
+        else if (p.isMoving())
+        {
+            sb.append("MOVING");
+            if (p.getDestinationX() != 0 || p.getDestinationY() != 0)
+            {
+                sb.append(" dest:(").append(p.getDestinationX())
+                  .append(",").append(p.getDestinationY()).append(")");
+            }
+        }
         else sb.append("ANIMATING(").append(p.getAnimationId()).append(")");
         sb.append("\n");
 

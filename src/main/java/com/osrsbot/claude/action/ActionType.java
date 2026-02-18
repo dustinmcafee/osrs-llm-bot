@@ -38,5 +38,6 @@ public enum ActionType
     BANK_DEPOSIT_ALL,
     SET_ATTACK_STYLE,
     SET_AUTOCAST,
-    WORLD_HOP
+    WORLD_HOP,
+    PATH_TO
 }

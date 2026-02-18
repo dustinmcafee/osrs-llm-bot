@@ -78,6 +78,9 @@ public class ClaudeBotPlugin extends Plugin
     @Inject
     private HumanSimulator humanSimulator;
 
+    @Inject
+    private com.osrsbot.claude.pathfinder.PathfinderService pathfinderService;
+
     private int tickCounter = 0;
     private final AtomicBoolean awaitingResponse = new AtomicBoolean(false);
     private volatile boolean active = false;
@@ -132,6 +135,17 @@ public class ClaudeBotPlugin extends Plugin
 
             // Configure state reader
             gameStateReader.setScanRadius(config.nearbyEntityRadius());
+
+            // Load pathfinding data (collision map + transports)
+            try
+            {
+                pathfinderService.load();
+                System.out.println("[ClaudeBot] pathfinder loaded");
+            }
+            catch (Throwable t)
+            {
+                System.err.println("[ClaudeBot] Pathfinder load failed (non-fatal): " + t.getMessage());
+            }
 
             generation++;
             active = true;
