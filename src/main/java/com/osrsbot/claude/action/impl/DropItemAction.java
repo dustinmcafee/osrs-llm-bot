@@ -57,8 +57,10 @@ public class DropItemAction
             human.keyDown(KeyEvent.VK_SHIFT);
             human.moveAndClick(point.x, point.y);
             human.keyUp(KeyEvent.VK_SHIFT);
-            human.shortPause();
         }
+
+        // Wait one game tick so inventory widget refreshes before next drop
+        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
 
         return ActionResult.success(ActionType.DROP_ITEM);
     }

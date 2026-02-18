@@ -60,7 +60,9 @@ public class EquipItemAction
 
         // Phase 2: Left-click the item (equippable items equip on left-click)
         human.moveAndClick(point.x, point.y);
-        human.shortPause();
+
+        // Wait one game tick so inventory/equipment state refreshes before next action
+        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
 
         return ActionResult.success(ActionType.EQUIP_ITEM);
     }

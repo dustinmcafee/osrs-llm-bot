@@ -16,9 +16,13 @@ import java.awt.event.KeyEvent;
 
 public class BankDepositAction
 {
+    private static final int VERIFY_POLL_MS = 100;
+    private static final int VERIFY_TIMEOUT_MS = 1800; // 3 game ticks
+
+
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
-        // Phase 1: Widget lookup on client thread
+        // Phase 1: Widget lookup on client thread — count current inventory qty for verification
         Object[] lookupData;
         try
         {
@@ -46,7 +50,12 @@ public class BankDepositAction
                     return new Object[]{ "NO_BOUNDS" };
                 }
 
-                return new Object[]{ "OK", new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY()) };
+                // Count how many of this item are in inventory for verification
+                int invCount = countInInventory(client, itemUtils, action.getName());
+
+                return new Object[]{ "OK",
+                    new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY()),
+                    invCount };
             });
         }
         catch (Throwable t)
@@ -62,6 +71,7 @@ public class BankDepositAction
         }
 
         java.awt.Point point = (java.awt.Point) lookupData[1];
+        int invCountBefore = (int) lookupData[2];
 
         // Phase 2: Right-click select on background thread
         int qty = action.getQuantity();
@@ -81,10 +91,70 @@ public class BankDepositAction
             human.shortPause(); // wait for chatbox input to appear
             human.typeText(String.valueOf(qty));
             human.pressKey(KeyEvent.VK_ENTER);
-            human.shortPause();
         }
 
+        // Phase 3: Wait for the deposit to actually complete (item leaves inventory)
+        if (!waitForInventoryDecrease(client, clientThread, itemUtils, action.getName(), invCountBefore, human))
+        {
+            System.err.println("[ClaudeBot] BankDeposit: item may not have been deposited for " + action.getName());
+        }
+
+        // Wait one full game tick so the bank widget refreshes before the next bank operation
+        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+
         return ActionResult.success(ActionType.BANK_DEPOSIT);
+    }
+
+    /**
+     * Polls inventory until item count decreases (deposit registered) or timeout.
+     */
+    private static boolean waitForInventoryDecrease(Client client, ClientThread clientThread,
+                                                      ItemUtils itemUtils, String itemName,
+                                                      int countBefore, HumanSimulator human)
+    {
+        long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline)
+        {
+            human.getTimingEngine().sleep(VERIFY_POLL_MS);
+            try
+            {
+                int current = ClientThreadRunner.runOnClientThread(clientThread,
+                    () -> countInInventory(client, itemUtils, itemName));
+                if (current < countBefore)
+                {
+                    return true;
+                }
+            }
+            catch (Throwable t)
+            {
+                // Ignore and retry
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Count how many of an item are in the bank's inventory panel.
+     */
+    private static int countInInventory(Client client, ItemUtils itemUtils, String name)
+    {
+        Widget bankInv = client.getWidget(WidgetInfo.BANK_INVENTORY_ITEMS_CONTAINER);
+        if (bankInv == null) return 0;
+        int count = 0;
+        Widget[] children = bankInv.getDynamicChildren();
+        if (children == null) return 0;
+        for (Widget child : children)
+        {
+            if (child.getItemId() > 0)
+            {
+                String itemName = itemUtils.getItemName(client, child.getItemId());
+                if (itemName != null && itemName.equalsIgnoreCase(name))
+                {
+                    count += child.getItemQuantity();
+                }
+            }
+        }
+        return count;
     }
 
     /**

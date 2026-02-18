@@ -213,7 +213,7 @@ public class ActionExecutor
             case BANK_WITHDRAW:
                 return BankWithdrawAction.execute(client, humanSimulator, itemUtils, clientThread, action);
             case BANK_CLOSE:
-                return BankCloseAction.execute(client, humanSimulator);
+                return BankCloseAction.execute(client, humanSimulator, clientThread);
             case TOGGLE_PRAYER:
                 return TogglePrayerAction.execute(client, humanSimulator, clientThread, action);
             case TOGGLE_RUN:

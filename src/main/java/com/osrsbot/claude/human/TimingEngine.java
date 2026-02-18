@@ -34,6 +34,16 @@ public class TimingEngine
         return gaussianDelay(30, 90);
     }
 
+    /**
+     * Returns a humanized delay that guarantees at least one full game tick (600ms).
+     * Range: 620-980ms with gaussian distribution centered around ~800ms.
+     * Used between consecutive server-mutating actions (bank ops, equips, shop buys, drops).
+     */
+    public int nextTickDelay()
+    {
+        return gaussianDelay(620, 980);
+    }
+
     private int gaussianDelay(int min, int max)
     {
         double mean = (min + max) / 2.0;

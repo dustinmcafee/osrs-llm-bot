@@ -253,34 +253,59 @@ public class PathfinderService
     }
 
     /**
-     * Check if the requirement includes a quest, diary, or other non-skill gate.
-     * These transports should be skipped unless we can verify completion.
+     * Check if the requirement includes a quest, diary, item gate, varbit check,
+     * or other non-skill gate that we cannot verify at runtime.
+     * Returns true if the transport should be blocked (requirement can't be confirmed).
+     * Returns false for harmless notes, warnings, instructions, and pure skill checks.
      */
     private boolean hasQuestRequirement(String req)
     {
         String lower = req.toLowerCase();
-        // Skip if it mentions a quest, diary, or other gate we can't verify
-        // But don't flag pure skill requirements or simple notes
-        if (lower.contains("diary")) return true;
-        if (lower.contains("quest")) return true;
 
-        // Check for named quests (requirement is just a quest name, no skill level)
-        // If there's no numeric skill requirement and it's not just a note, treat as quest
-        if (!lower.matches(".*\\d+\\s+(agility|mining|strength|ranged|woodcutting|fishing).*")
-            && !lower.startsWith("needs to be")
-            && !lower.startsWith("has ")
-            && !lower.startsWith("no ")
-            && !lower.startsWith("chat ")
-            && !lower.startsWith("fails "))
-        {
-            // Likely a quest name like "Ernest the Chicken", "Fishing Contest"
-            if (lower.matches(".*[A-Z].*") || req.contains(","))
-            {
-                // Has capitalized words or commas — might be quest name
-                // But also might be a place name in a note
-                // Be conservative: only flag if it looks like a known quest pattern
-            }
-        }
+        // --- Harmless patterns: never block these ---
+        if (lower.startsWith("has a warning") || lower.startsWith("has warning")
+            || lower.startsWith("warning if")) return false;
+        if (lower.startsWith("chat option")) return false;
+        if (lower.startsWith("select '")) return false;
+        if (lower.startsWith("needs to be opened")) return false;
+        if (lower.startsWith("fails first")) return false;
+        if (lower.startsWith("need to walk") || lower.startsWith("need to click")) return false;
+        if (lower.startsWith("if has ") || lower.startsWith("if no ")) return false;
+        // Pure run energy check is not a quest gate
+        if (lower.matches("\\d+\\s+run energy")) return false;
+        // "Agility?" is an uncertain note, not a real gate
+        if (lower.equals("agility?")) return false;
+        // Pure agility + note combo like "31 Agility, need to click stone in right direction"
+        if (lower.matches("\\d+\\s+agility,?\\s+need to.*")) return false;
+
+        // --- Blocking patterns ---
+        // Diary requirements
+        if (lower.contains("diary")) return true;
+        // Explicit quest keyword
+        if (lower.contains("quest")) return true;
+        // Varbit/state checks we can't verify
+        if (lower.contains("varb(") || lower.contains("varbit")) return true;
+        // Permission or guild access
+        if (lower.contains("permission")) return true;
+        if (lower.contains("guild requirements")) return true;
+
+        // Named quest requirements (exact quest names found in transports.txt)
+        if (lower.contains("ernest the chicken")) return true;
+        if (lower.contains("fishing contest")) return true;
+        if (lower.contains("darkness of hallowvale")) return true;
+
+        // Item/key requirements (player must have a specific item)
+        if (lower.contains("dusty key")) return true;
+        if (lower.contains("crystal-mine key")) return true;
+        if (lower.contains("shantay pass")) return true;
+        if (lower.contains("skavid map")) return true;
+        if (lower.contains("glarial's amulet")) return true;
+        if (lower.matches(".*key,?\\s*id\\s*\\d+.*")) return true;
+
+        // If it's just a pure agility number like "42 Agility", that's handled
+        // by parseAgilityReq() separately — don't flag it here
+        if (lower.matches("\\d+\\s+agility")) return false;
+
         return false;
     }
 

@@ -95,7 +95,9 @@ public class ShopBuyAction
             return ActionResult.failure(ActionType.SHOP_BUY, "Buy option not found for: " + itemName);
         }
 
-        human.shortPause();
+        // Wait one game tick so shop stock/inventory refreshes before next action
+        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+
         return ActionResult.success(ActionType.SHOP_BUY);
     }
 

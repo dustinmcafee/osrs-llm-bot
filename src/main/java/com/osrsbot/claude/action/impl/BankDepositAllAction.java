@@ -15,6 +15,10 @@ import net.runelite.client.callback.ClientThread;
  */
 public class BankDepositAllAction
 {
+    private static final int VERIFY_POLL_MS = 100;
+    private static final int VERIFY_TIMEOUT_MS = 1800;
+
+
     public static ActionResult execute(Client client, HumanSimulator human, ClientThread clientThread)
     {
         // Phase 1: Find deposit-all button on client thread
@@ -48,6 +52,36 @@ public class BankDepositAllAction
 
         // Phase 2: Click on background thread
         human.moveAndClick(point.x, point.y);
+
+        // Phase 3: Wait for inventory to empty
+        long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline)
+        {
+            human.getTimingEngine().sleep(VERIFY_POLL_MS);
+            try
+            {
+                boolean empty = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    Widget bankInv = client.getWidget(WidgetInfo.BANK_INVENTORY_ITEMS_CONTAINER);
+                    if (bankInv == null) return true;
+                    Widget[] children = bankInv.getDynamicChildren();
+                    if (children == null) return true;
+                    for (Widget child : children)
+                    {
+                        if (child.getItemId() > 0) return false;
+                    }
+                    return true;
+                });
+                if (empty) break;
+            }
+            catch (Throwable t)
+            {
+                // Ignore and retry
+            }
+        }
+
+        // Wait one full game tick so the bank widget refreshes before the next bank operation
+        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+
         return ActionResult.success(ActionType.BANK_DEPOSIT_ALL);
     }
 }
