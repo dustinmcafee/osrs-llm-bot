@@ -13,9 +13,12 @@ import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.callback.ClientThread;
 
+import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 
 /**
  * Walks one segment of a computed path per invocation.
@@ -35,6 +38,16 @@ public class PathToAction
     private static final int MAX_WAYPOINT_DIST = 18;
     private static final int MINIMAP_TILE_RANGE = 17;
     private static final int ARRIVAL_DISTANCE = 2;
+    private static final int STUCK_DETECT_DIST = 3;
+
+    /** Actions that indicate a closed/locked door or gate we can open */
+    private static final Set<String> DOOR_OPEN_ACTIONS = new HashSet<>(Arrays.asList(
+        "open", "go-through", "walk-through", "push-open"
+    ));
+
+    /** Track last position to detect stuck state across calls */
+    private static WorldPoint lastPosition = null;
+    private static int stuckCounter = 0;
 
     public static ActionResult execute(Client client, HumanSimulator human,
                                        PathfinderService pathfinderService,
@@ -86,8 +99,38 @@ public class PathToAction
         if (playerPos.distanceTo(target) <= ARRIVAL_DISTANCE)
         {
             pathfinderService.invalidate();
+            lastPosition = null;
+            stuckCounter = 0;
             return ActionResult.success(ActionType.PATH_TO);
         }
+
+        // Detect stuck: player hasn't moved since last PATH_TO call
+        if (lastPosition != null && playerPos.distanceTo(lastPosition) <= STUCK_DETECT_DIST)
+        {
+            stuckCounter++;
+            if (stuckCounter >= 2)
+            {
+                // Player is stuck — block tiles ahead on the path and force recompute
+                System.out.println("[ClaudeBot] PATH_TO: stuck at " + playerPos
+                    + " for " + stuckCounter + " calls, blocking area ahead");
+
+                // Block tiles in the direction of travel
+                int dirX = Integer.signum(target.getX() - playerPos.getX());
+                int dirY = Integer.signum(target.getY() - playerPos.getY());
+                WorldPoint blockCenter = new WorldPoint(
+                    playerPos.getX() + dirX * 3,
+                    playerPos.getY() + dirY * 3,
+                    playerPos.getPlane());
+                pathfinderService.blockArea(blockCenter, 2);
+                pathfinderService.invalidate();
+                stuckCounter = 0; // Reset after blocking
+            }
+        }
+        else
+        {
+            stuckCounter = 0;
+        }
+        lastPosition = playerPos;
 
         // Get or compute path (restricted to F2P areas + filtered by agility level)
         List<WorldPoint> path = pathfinderService.getPath(playerPos, target, membersWorld, agilityLevel);
@@ -106,6 +149,15 @@ public class PathToAction
         }
 
         int remaining = path.size() - currentIdx - 1;
+
+        // Check for blocking doors/gates near the player and open them
+        ActionResult doorResult = handleBlockingDoor(client, human, objectUtils,
+            clientThread, playerPos, target, remaining);
+        if (doorResult != null)
+        {
+            pathfinderService.invalidate();
+            return doorResult;
+        }
 
         // Scan ahead for the next transport step
         int transportIdx = findNextTransport(path, currentIdx, pathfinderService, membersWorld);
@@ -367,5 +419,202 @@ public class PathToAction
             }
         }
         return -1;
+    }
+
+    /**
+     * Checks for a closed door/gate within 1 tile of the player in the direction of travel.
+     * If found, opens it and walks through. Returns ActionResult if handled, null if no door.
+     *
+     * This handles doors NOT in transports.txt — the collision map has them blocked,
+     * so BFS routes around them. We detect them at runtime, open them, then walk through
+     * manually so the game's live pathfinding takes advantage of the open door.
+     */
+    private static ActionResult handleBlockingDoor(Client client, HumanSimulator human,
+                                                    ObjectUtils objectUtils,
+                                                    ClientThread clientThread,
+                                                    WorldPoint playerPos, WorldPoint target,
+                                                    int remaining)
+    {
+        // Direction from player to target
+        int dirX = Integer.signum(target.getX() - playerPos.getX());
+        int dirY = Integer.signum(target.getY() - playerPos.getY());
+
+        // Only check if we have a clear direction to travel
+        if (dirX == 0 && dirY == 0) return null;
+
+        // Phase 1: Find a nearby closed door on client thread
+        Object[] doorData;
+        try
+        {
+            final int fdirX = dirX;
+            final int fdirY = dirY;
+            doorData = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Player local = client.getLocalPlayer();
+                if (local == null) return null;
+
+                Scene scene = client.getScene();
+                Tile[][][] tiles = scene.getTiles();
+                int plane = client.getPlane();
+                int psx = local.getLocalLocation().getSceneX();
+                int psy = local.getLocalLocation().getSceneY();
+
+                // Scan tiles within 1 tile of player
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    for (int dy = -1; dy <= 1; dy++)
+                    {
+                        if (dx == 0 && dy == 0) continue;
+
+                        // Only check tiles in the general direction of travel
+                        // (don't open doors behind us)
+                        if (fdirX != 0 && Integer.signum(dx) == -fdirX) continue;
+                        if (fdirY != 0 && Integer.signum(dy) == -fdirY) continue;
+
+                        int sx = psx + dx;
+                        int sy = psy + dy;
+                        if (sx < 0 || sy < 0 || sx >= Constants.SCENE_SIZE || sy >= Constants.SCENE_SIZE)
+                            continue;
+
+                        Tile tile = tiles[plane][sx][sy];
+                        if (tile == null) continue;
+
+                        // Check wall objects (most doors/gates)
+                        WallObject wall = tile.getWallObject();
+                        if (wall != null)
+                        {
+                            Object[] data = checkDoorObject(client, wall, dx, dy);
+                            if (data != null) return data;
+                        }
+
+                        // Check game objects (some gates, barriers)
+                        for (GameObject obj : tile.getGameObjects())
+                        {
+                            if (obj == null) continue;
+                            Object[] data = checkDoorObject(client, obj, dx, dy);
+                            if (data != null) return data;
+                        }
+                    }
+                }
+                return null;
+            });
+        }
+        catch (Throwable t)
+        {
+            return null; // Silently fail — don't block normal pathfinding
+        }
+
+        if (doorData == null) return null;
+
+        java.awt.Point screenPoint = (java.awt.Point) doorData[0];
+        String action = (String) doorData[1];
+        String name = (String) doorData[2];
+        int doorDx = (int) doorData[3];
+        int doorDy = (int) doorData[4];
+
+        System.out.println("[ClaudeBot] PATH_TO: detected blocking " + name + " — " + action);
+
+        // Phase 2: Move mouse to door
+        if (screenPoint != null)
+        {
+            human.moveMouse(screenPoint.x, screenPoint.y);
+            human.shortPause();
+        }
+
+        // Phase 3: Fire the Open action via menu entries
+        final String fAction = action;
+        final String fName = name;
+        clientThread.invokeLater(() -> {
+            try
+            {
+                net.runelite.api.MenuEntry[] entries = client.getMenuEntries();
+                net.runelite.api.MenuEntry match = null;
+                if (entries != null)
+                {
+                    for (net.runelite.api.MenuEntry entry : entries)
+                    {
+                        String entryOption = entry.getOption();
+                        String entryTarget = entry.getTarget();
+                        if (entryOption != null
+                            && DOOR_OPEN_ACTIONS.contains(entryOption.toLowerCase())
+                            && entryTarget != null
+                            && entryTarget.toLowerCase().contains(fName.toLowerCase()))
+                        {
+                            match = entry;
+                            break;
+                        }
+                    }
+                }
+
+                if (match != null)
+                {
+                    client.menuAction(match.getParam0(), match.getParam1(),
+                        match.getType(), match.getIdentifier(), -1,
+                        match.getOption(), match.getTarget());
+                }
+            }
+            catch (Throwable t)
+            {
+                System.err.println("[ClaudeBot] PATH_TO door open failed: " + t.getMessage());
+            }
+        });
+
+        // Wait for door to open (one game tick)
+        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+
+        // Walk through the door — click 2 tiles past it on the minimap
+        int throughX = playerPos.getX() + doorDx * 2;
+        int throughY = playerPos.getY() + doorDy * 2;
+        walkTowardMinimap(client, human, clientThread, playerPos,
+            new WorldPoint(throughX, throughY, playerPos.getPlane()), remaining);
+
+        System.out.println("[ClaudeBot] PATH_TO: opened " + name + " and walking through, "
+            + remaining + " tiles remaining");
+        return ActionResult.success(ActionType.PATH_TO);
+    }
+
+    /**
+     * Checks if a tile object is a door/gate with an "Open" action.
+     * Returns [screenPoint, action, name, dx, dy] if it is, null otherwise.
+     */
+    private static Object[] checkDoorObject(Client client, TileObject obj, int dx, int dy)
+    {
+        ObjectComposition comp = client.getObjectDefinition(obj.getId());
+        if (comp == null) return null;
+
+        if (comp.getImpostorIds() != null)
+        {
+            ObjectComposition impostor = comp.getImpostor();
+            if (impostor != null) comp = impostor;
+        }
+
+        String name = comp.getName();
+        if (name == null || name.isEmpty() || name.equals("null")) return null;
+
+        // Check if any action is a door-open action
+        String[] actions = comp.getActions();
+        if (actions == null) return null;
+
+        String openAction = null;
+        for (String a : actions)
+        {
+            if (a != null && DOOR_OPEN_ACTIONS.contains(a.toLowerCase()))
+            {
+                openAction = a;
+                break;
+            }
+        }
+
+        if (openAction == null) return null;
+
+        // Get screen position
+        java.awt.Point screenPoint = null;
+        if (obj.getClickbox() != null)
+        {
+            java.awt.Rectangle bounds = obj.getClickbox().getBounds();
+            screenPoint = new java.awt.Point(
+                (int) bounds.getCenterX(), (int) bounds.getCenterY());
+        }
+
+        return new Object[]{ screenPoint, openAction, name, dx, dy };
     }
 }

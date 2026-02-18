@@ -58,13 +58,13 @@ public class PathfinderService
 
     /** All transport connections for BFS (members + F2P) */
     private Map<WorldPoint, List<WorldPoint>> transportMap;
-    /** All transport details for execution */
-    private Map<WorldPoint, Transport> transportDetails;
+    /** All transport details for execution (multiple transports per tile) */
+    private Map<WorldPoint, List<Transport>> transportDetails;
 
     /** F2P-only transport connections for BFS */
     private Map<WorldPoint, List<WorldPoint>> f2pTransportMap;
-    /** F2P-only transport details for execution */
-    private Map<WorldPoint, Transport> f2pTransportDetails;
+    /** F2P-only transport details for execution (multiple transports per tile) */
+    private Map<WorldPoint, List<Transport>> f2pTransportDetails;
 
     /** Cached path from last computation */
     private List<WorldPoint> cachedPath;
@@ -72,6 +72,13 @@ public class PathfinderService
     private boolean cachedMembersWorld;
     private int cachedAgilityLevel;
     private volatile boolean loaded = false;
+
+    /**
+     * Tiles discovered at runtime to be blocked (stale collision data).
+     * When the player gets stuck, these tiles are added so the BFS routes around them.
+     * Cleared when the target changes (new destination = fresh slate).
+     */
+    private final Set<WorldPoint> runtimeBlockedTiles = new HashSet<>();
 
     /**
      * Loads collision data and transport connections. Call once on plugin startup.
@@ -119,6 +126,7 @@ public class PathfinderService
         transportDetails = new HashMap<>();
         f2pTransportMap = new HashMap<>();
         f2pTransportDetails = new HashMap<>();
+
 
         try
         {
@@ -220,13 +228,13 @@ public class PathfinderService
 
             // Add to full transport maps (members world uses these)
             transportMap.computeIfAbsent(start, k -> new ArrayList<>()).add(end);
-            transportDetails.putIfAbsent(start, transport);
+            transportDetails.computeIfAbsent(start, k -> new ArrayList<>()).add(transport);
 
             // Add to F2P transport maps only if in an F2P section
             if (isF2PSection)
             {
                 f2pTransportMap.computeIfAbsent(start, k -> new ArrayList<>()).add(end);
-                f2pTransportDetails.putIfAbsent(start, transport);
+                f2pTransportDetails.computeIfAbsent(start, k -> new ArrayList<>()).add(transport);
             }
         }
         catch (NumberFormatException e)
@@ -335,16 +343,22 @@ public class PathfinderService
 
         // Pick the right transport maps based on world type
         Map<WorldPoint, List<WorldPoint>> baseTransports = membersWorld ? transportMap : f2pTransportMap;
-        Map<WorldPoint, Transport> baseDetails = membersWorld ? transportDetails : f2pTransportDetails;
+        Map<WorldPoint, List<Transport>> baseDetails = membersWorld ? transportDetails : f2pTransportDetails;
 
         // Filter out transports the player can't actually use (agility, quest reqs)
         Map<WorldPoint, List<WorldPoint>> filteredTransports = filterTransports(
             baseTransports, baseDetails, agilityLevel);
 
+        // Clear runtime blocks when destination changes (fresh start for new path)
+        if (cachedTarget == null || !cachedTarget.equals(to))
+        {
+            runtimeBlockedTiles.clear();
+        }
+
         // Compute new path (restrict to F2P areas when on a free world)
         boolean restrictToF2P = !membersWorld;
         Pathfinder pathfinder = new Pathfinder(collisionMap, filteredTransports,
-            from, to, true, restrictToF2P);
+            from, to, true, restrictToF2P, runtimeBlockedTiles);
         cachedPath = pathfinder.find();
         cachedTarget = to;
         cachedMembersWorld = membersWorld;
@@ -369,7 +383,7 @@ public class PathfinderService
      */
     private Map<WorldPoint, List<WorldPoint>> filterTransports(
         Map<WorldPoint, List<WorldPoint>> baseTransports,
-        Map<WorldPoint, Transport> baseDetails,
+        Map<WorldPoint, List<Transport>> baseDetails,
         int agilityLevel)
     {
         Map<WorldPoint, List<WorldPoint>> filtered = new HashMap<>();
@@ -377,12 +391,28 @@ public class PathfinderService
         for (Map.Entry<WorldPoint, List<WorldPoint>> entry : baseTransports.entrySet())
         {
             WorldPoint start = entry.getKey();
-            Transport transport = baseDetails.get(start);
+            List<Transport> transports = baseDetails.get(start);
 
-            // If no transport details exist, or transport is usable, include it
-            if (transport == null || transport.canUse(agilityLevel))
+            if (transports == null || transports.isEmpty())
             {
+                // No details — include all destinations
                 filtered.put(start, entry.getValue());
+                continue;
+            }
+
+            // Filter individual destinations based on which transports are usable
+            List<WorldPoint> usableDestinations = new ArrayList<>();
+            for (Transport t : transports)
+            {
+                if (t.canUse(agilityLevel))
+                {
+                    usableDestinations.add(t.end);
+                }
+            }
+
+            if (!usableDestinations.isEmpty())
+            {
+                filtered.put(start, usableDestinations);
             }
         }
 
@@ -395,7 +425,8 @@ public class PathfinderService
      */
     public Transport getTransportAt(WorldPoint tile, boolean membersWorld)
     {
-        return (membersWorld ? transportDetails : f2pTransportDetails).get(tile);
+        List<Transport> transports = (membersWorld ? transportDetails : f2pTransportDetails).get(tile);
+        return (transports != null && !transports.isEmpty()) ? transports.get(0) : null;
     }
 
     /**
@@ -403,10 +434,16 @@ public class PathfinderService
      */
     public Transport getTransportBetween(WorldPoint from, WorldPoint to, boolean membersWorld)
     {
-        Transport t = (membersWorld ? transportDetails : f2pTransportDetails).get(from);
-        if (t != null && t.end.equals(to))
+        List<Transport> transports = (membersWorld ? transportDetails : f2pTransportDetails).get(from);
+        if (transports != null)
         {
-            return t;
+            for (Transport t : transports)
+            {
+                if (t.end.equals(to))
+                {
+                    return t;
+                }
+            }
         }
         return null;
     }
@@ -418,6 +455,27 @@ public class PathfinderService
     {
         cachedPath = null;
         cachedTarget = null;
+    }
+
+    /**
+     * Mark a tile and its neighbors as runtime-blocked (stale collision data).
+     * The BFS will avoid these tiles on the next path computation.
+     * Called when the player gets stuck at a position the collision map says is walkable.
+     */
+    public void blockArea(WorldPoint center, int radius)
+    {
+        int cx = center.getX();
+        int cy = center.getY();
+        int cz = center.getPlane();
+        for (int dx = -radius; dx <= radius; dx++)
+        {
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                runtimeBlockedTiles.add(new WorldPoint(cx + dx, cy + dy, cz));
+            }
+        }
+        System.out.println("[ClaudeBot] Pathfinder: blocked " + ((2 * radius + 1) * (2 * radius + 1))
+            + " tiles around " + center + " (total blocked: " + runtimeBlockedTiles.size() + ")");
     }
 
     public boolean isLoaded()

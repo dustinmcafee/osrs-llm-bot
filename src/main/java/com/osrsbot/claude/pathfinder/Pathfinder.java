@@ -27,6 +27,7 @@ public class Pathfinder
     private final Map<WorldPoint, List<WorldPoint>> transports;
     private final boolean avoidWilderness;
     private final boolean restrictToF2P;
+    private final Set<WorldPoint> runtimeBlocked;
     private final Random random = new Random();
     private Node nearest;
 
@@ -34,12 +35,20 @@ public class Pathfinder
                       WorldPoint start, WorldPoint target, boolean avoidWilderness,
                       boolean restrictToF2P)
     {
+        this(map, transports, start, target, avoidWilderness, restrictToF2P, Collections.emptySet());
+    }
+
+    public Pathfinder(CollisionMap map, Map<WorldPoint, List<WorldPoint>> transports,
+                      WorldPoint start, WorldPoint target, boolean avoidWilderness,
+                      boolean restrictToF2P, Set<WorldPoint> runtimeBlocked)
+    {
         this.map = map;
         this.transports = transports;
         this.target = target;
         this.start = new Node(start, null);
         this.avoidWilderness = avoidWilderness;
         this.restrictToF2P = restrictToF2P;
+        this.runtimeBlocked = runtimeBlocked;
         nearest = null;
     }
 
@@ -52,7 +61,11 @@ public class Pathfinder
         {
             Node node = boundary.remove(0);
 
-            if (node.position.equals(target))
+            // Match target by x,y only — ignore plane so the BFS terminates
+            // as soon as it reaches the right coordinates on ANY plane.
+            // Multi-plane paths (via staircase transports) are handled naturally.
+            if (node.position.getX() == target.getX()
+                && node.position.getY() == target.getY())
             {
                 return node.path();
             }
@@ -119,6 +132,12 @@ public class Pathfinder
         }
 
         if (restrictToF2P && !isF2PArea(neighbor))
+        {
+            return;
+        }
+
+        // Skip tiles discovered at runtime to be blocked (stale collision data)
+        if (!runtimeBlocked.isEmpty() && runtimeBlocked.contains(neighbor))
         {
             return;
         }

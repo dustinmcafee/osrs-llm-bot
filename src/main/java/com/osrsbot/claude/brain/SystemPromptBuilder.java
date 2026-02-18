@@ -38,6 +38,7 @@ public class SystemPromptBuilder
             + "UI: CLICK_WIDGET(x,y) | CLICK_WIDGET(x,y,option=\"right\") | MAKE_ITEM(name) | OPEN_TAB(name) | SELECT_DIALOGUE(option) | CONTINUE_DIALOGUE\n"
             + "Other: WAIT(ticks) | TOGGLE_RUN | TYPE_TEXT(text) | TYPE_TEXT(text,option=\"enter\") | PRESS_KEY(name) | WORLD_HOP(x)\n\n"
             + "## Navigation & Obstacles\n"
+            + "- **Coordinates**: increasing Y = north, decreasing Y = south, increasing X = east, decreasing X = west.\n"
             + "- **Use PATH_TO for all travel >5 tiles.** It handles doors, stairs, ladders, and walls automatically.\n"
             + "- PATH_TO walks one segment per call. Re-issue it each cycle until you arrive. It reports tiles remaining.\n"
             + "- Use WALK_TO/MINIMAP_WALK only for short local movement (<5 tiles) where you can see the target.\n"
