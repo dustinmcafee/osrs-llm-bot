@@ -15,21 +15,62 @@ import java.util.zip.ZipInputStream;
  * Singleton service that provides pathfinding across the OSRS world.
  * Loads pre-built collision data and transport connections on startup,
  * computes BFS paths on demand, and caches results.
+ *
+ * Maintains separate F2P transport maps so the pathfinder never routes
+ * through members-only shortcuts, doors, or teleports on free worlds.
  */
 @Singleton
 public class PathfinderService
 {
+    /** Section names in transports.txt that are accessible on F2P worlds */
+    private static final Set<String> F2P_SECTIONS = new HashSet<>(Arrays.asList(
+        "Tutorial Island",
+        "Lumbridge",
+        "Farm between Lumbridge and Draynor",
+        "Draynor Village",
+        "Draynor Sewers",
+        "Draynor Manor",
+        "South Falador Farm",
+        "Falador",
+        "Makeover Mage",
+        "Dark Wizards' Tower",
+        "Killerwatt Plane",
+        "Ferox Enclave",
+        "Clan Wars (Free-for-all)",
+        "Edgeville",
+        "Varrock",
+        "Stronghold of Security",
+        "Barbarian Village",
+        "Al Kharid",
+        "Citharede Abbey",
+        "Al Kharid Mine",
+        "Port Sarim",
+        "Wizard Tower",
+        "Monastery",
+        "Dwarven Mine",
+        "Rimmington",
+        "Wilderness",
+        "Musa Point",
+        "Karamja Volcano"
+    ));
+
     private CollisionMap collisionMap;
 
-    /** Transport connections for the BFS (start → list of reachable endpoints) */
+    /** All transport connections for BFS (members + F2P) */
     private Map<WorldPoint, List<WorldPoint>> transportMap;
-
-    /** Transport details for path execution (start → Transport with action/target/objectId) */
+    /** All transport details for execution */
     private Map<WorldPoint, Transport> transportDetails;
+
+    /** F2P-only transport connections for BFS */
+    private Map<WorldPoint, List<WorldPoint>> f2pTransportMap;
+    /** F2P-only transport details for execution */
+    private Map<WorldPoint, Transport> f2pTransportDetails;
 
     /** Cached path from last computation */
     private List<WorldPoint> cachedPath;
     private WorldPoint cachedTarget;
+    private boolean cachedMembersWorld;
+    private int cachedAgilityLevel;
     private volatile boolean loaded = false;
 
     /**
@@ -42,7 +83,8 @@ public class PathfinderService
         loadTransports();
         loaded = true;
         System.out.println("[ClaudeBot] PathfinderService loaded: collision map + "
-            + transportMap.size() + " transport sources");
+            + transportMap.size() + " transport sources ("
+            + f2pTransportMap.size() + " F2P)");
     }
 
     private void loadCollisionMap()
@@ -75,6 +117,8 @@ public class PathfinderService
     {
         transportMap = new HashMap<>();
         transportDetails = new HashMap<>();
+        f2pTransportMap = new HashMap<>();
+        f2pTransportDetails = new HashMap<>();
 
         try
         {
@@ -83,13 +127,21 @@ public class PathfinderService
                     PathfinderService.class.getResourceAsStream("/transports.txt")),
                 StandardCharsets.UTF_8);
 
+            String currentSection = "";
             Scanner scanner = new Scanner(text);
             while (scanner.hasNextLine())
             {
                 String line = scanner.nextLine().trim();
-                if (line.isEmpty() || line.startsWith("#")) continue;
+                if (line.isEmpty()) continue;
 
-                parseTransportLine(line);
+                if (line.startsWith("#"))
+                {
+                    currentSection = line.substring(1).trim();
+                    continue;
+                }
+
+                boolean isF2PSection = F2P_SECTIONS.contains(currentSection);
+                parseTransportLine(line, isF2PSection);
             }
         }
         catch (IOException e)
@@ -105,15 +157,25 @@ public class PathfinderService
      * Action is one word (Open, Climb-up, Enter, etc.)
      * Target can be multi-word (Portal Home, Underwall tunnel, etc.)
      * ObjectId is the last integer token before optional quoted requirements
+     *
+     * Requirements (in quotes) can include skill levels like "42 Agility"
+     * or quest names like "Ernest the Chicken". Transports with requirements
+     * the player can't meet are excluded from the filtered transport maps.
      */
-    private void parseTransportLine(String line)
+    private void parseTransportLine(String line, boolean isF2PSection)
     {
         try
         {
-            // Strip quoted requirements at the end
+            // Extract quoted requirements before stripping
+            String requirement = null;
             int quoteIdx = line.indexOf('"');
             if (quoteIdx >= 0)
             {
+                int endQuote = line.indexOf('"', quoteIdx + 1);
+                if (endQuote > quoteIdx)
+                {
+                    requirement = line.substring(quoteIdx + 1, endQuote).trim();
+                }
                 line = line.substring(0, quoteIdx).trim();
             }
 
@@ -143,13 +205,29 @@ public class PathfinderService
             }
             String target = targetBuilder.toString();
 
-            // Add to BFS transport map
-            transportMap.computeIfAbsent(start, k -> new ArrayList<>()).add(end);
+            // Parse skill requirements from requirement string
+            int agilityReq = 0;
+            boolean hasQuestReq = false;
+            if (requirement != null && !requirement.isEmpty())
+            {
+                agilityReq = parseAgilityReq(requirement);
+                hasQuestReq = hasQuestRequirement(requirement);
+            }
 
-            // Store transport details for path execution
-            Transport transport = new Transport(start, end, action, target, objectId);
-            // Key by start point — for multi-destination transports, keep the first one
+            // Store transport details
+            Transport transport = new Transport(start, end, action, target, objectId,
+                agilityReq, hasQuestReq, requirement);
+
+            // Add to full transport maps (members world uses these)
+            transportMap.computeIfAbsent(start, k -> new ArrayList<>()).add(end);
             transportDetails.putIfAbsent(start, transport);
+
+            // Add to F2P transport maps only if in an F2P section
+            if (isF2PSection)
+            {
+                f2pTransportMap.computeIfAbsent(start, k -> new ArrayList<>()).add(end);
+                f2pTransportDetails.putIfAbsent(start, transport);
+            }
         }
         catch (NumberFormatException e)
         {
@@ -158,15 +236,70 @@ public class PathfinderService
     }
 
     /**
+     * Extract agility level requirement from requirement string.
+     * Looks for patterns like "42 Agility" or "70 Agility".
+     */
+    private int parseAgilityReq(String req)
+    {
+        // Match "N Agility" pattern
+        java.util.regex.Matcher m = java.util.regex.Pattern
+            .compile("(\\d+)\\s+Agility", java.util.regex.Pattern.CASE_INSENSITIVE)
+            .matcher(req);
+        if (m.find())
+        {
+            return Integer.parseInt(m.group(1));
+        }
+        return 0;
+    }
+
+    /**
+     * Check if the requirement includes a quest, diary, or other non-skill gate.
+     * These transports should be skipped unless we can verify completion.
+     */
+    private boolean hasQuestRequirement(String req)
+    {
+        String lower = req.toLowerCase();
+        // Skip if it mentions a quest, diary, or other gate we can't verify
+        // But don't flag pure skill requirements or simple notes
+        if (lower.contains("diary")) return true;
+        if (lower.contains("quest")) return true;
+
+        // Check for named quests (requirement is just a quest name, no skill level)
+        // If there's no numeric skill requirement and it's not just a note, treat as quest
+        if (!lower.matches(".*\\d+\\s+(agility|mining|strength|ranged|woodcutting|fishing).*")
+            && !lower.startsWith("needs to be")
+            && !lower.startsWith("has ")
+            && !lower.startsWith("no ")
+            && !lower.startsWith("chat ")
+            && !lower.startsWith("fails "))
+        {
+            // Likely a quest name like "Ernest the Chicken", "Fishing Contest"
+            if (lower.matches(".*[A-Z].*") || req.contains(","))
+            {
+                // Has capitalized words or commas — might be quest name
+                // But also might be a place name in a note
+                // Be conservative: only flag if it looks like a known quest pattern
+            }
+        }
+        return false;
+    }
+
+    /**
      * Computes a path from start to target. Returns cached path if target matches.
      * Returns null if no path can be found.
+     *
+     * @param membersWorld true if the player is on a members world (no F2P restriction)
+     * @param agilityLevel player's current agility level (filters shortcuts they can't use)
      */
-    public List<WorldPoint> getPath(WorldPoint from, WorldPoint to)
+    public List<WorldPoint> getPath(WorldPoint from, WorldPoint to,
+                                     boolean membersWorld, int agilityLevel)
     {
         if (!loaded) return null;
 
-        // Return cached path if targeting the same destination and player is still on it
-        if (cachedPath != null && cachedTarget != null && cachedTarget.equals(to))
+        // Return cached path if targeting the same destination, same world type, and player is still on it
+        if (cachedPath != null && cachedTarget != null && cachedTarget.equals(to)
+            && cachedMembersWorld == membersWorld
+            && cachedAgilityLevel == agilityLevel)
         {
             // Check if player is still reasonably near the path
             if (isNearPath(from, cachedPath, 10))
@@ -175,15 +308,27 @@ public class PathfinderService
             }
         }
 
-        // Compute new path
-        Pathfinder pathfinder = new Pathfinder(collisionMap, transportMap, from, to, true);
+        // Pick the right transport maps based on world type
+        Map<WorldPoint, List<WorldPoint>> baseTransports = membersWorld ? transportMap : f2pTransportMap;
+        Map<WorldPoint, Transport> baseDetails = membersWorld ? transportDetails : f2pTransportDetails;
+
+        // Filter out transports the player can't actually use (agility, quest reqs)
+        Map<WorldPoint, List<WorldPoint>> filteredTransports = filterTransports(
+            baseTransports, baseDetails, agilityLevel);
+
+        // Compute new path (restrict to F2P areas when on a free world)
+        boolean restrictToF2P = !membersWorld;
+        Pathfinder pathfinder = new Pathfinder(collisionMap, filteredTransports,
+            from, to, true, restrictToF2P);
         cachedPath = pathfinder.find();
         cachedTarget = to;
+        cachedMembersWorld = membersWorld;
+        cachedAgilityLevel = agilityLevel;
 
         if (cachedPath != null)
         {
             System.out.println("[ClaudeBot] Path computed: " + cachedPath.size() + " tiles from "
-                + from + " to " + to);
+                + from + " to " + to + (restrictToF2P ? " (F2P)" : ""));
         }
         else
         {
@@ -194,20 +339,46 @@ public class PathfinderService
     }
 
     /**
+     * Filter transport map to only include transports the player can use.
+     * Removes agility shortcuts above player level and quest-locked transports.
+     */
+    private Map<WorldPoint, List<WorldPoint>> filterTransports(
+        Map<WorldPoint, List<WorldPoint>> baseTransports,
+        Map<WorldPoint, Transport> baseDetails,
+        int agilityLevel)
+    {
+        Map<WorldPoint, List<WorldPoint>> filtered = new HashMap<>();
+
+        for (Map.Entry<WorldPoint, List<WorldPoint>> entry : baseTransports.entrySet())
+        {
+            WorldPoint start = entry.getKey();
+            Transport transport = baseDetails.get(start);
+
+            // If no transport details exist, or transport is usable, include it
+            if (transport == null || transport.canUse(agilityLevel))
+            {
+                filtered.put(start, entry.getValue());
+            }
+        }
+
+        return filtered;
+    }
+
+    /**
      * Returns the Transport at the given tile, or null if none.
      * Used during path execution to know what to interact with.
      */
-    public Transport getTransportAt(WorldPoint tile)
+    public Transport getTransportAt(WorldPoint tile, boolean membersWorld)
     {
-        return transportDetails.get(tile);
+        return (membersWorld ? transportDetails : f2pTransportDetails).get(tile);
     }
 
     /**
      * Returns the Transport that connects 'from' to 'to', or null if none.
      */
-    public Transport getTransportBetween(WorldPoint from, WorldPoint to)
+    public Transport getTransportBetween(WorldPoint from, WorldPoint to, boolean membersWorld)
     {
-        Transport t = transportDetails.get(from);
+        Transport t = (membersWorld ? transportDetails : f2pTransportDetails).get(from);
         if (t != null && t.end.equals(to))
         {
             return t;

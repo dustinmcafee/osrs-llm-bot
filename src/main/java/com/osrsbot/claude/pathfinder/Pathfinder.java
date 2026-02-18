@@ -26,17 +26,20 @@ public class Pathfinder
     private final Set<WorldPoint> visited = new HashSet<>();
     private final Map<WorldPoint, List<WorldPoint>> transports;
     private final boolean avoidWilderness;
+    private final boolean restrictToF2P;
     private final Random random = new Random();
     private Node nearest;
 
     public Pathfinder(CollisionMap map, Map<WorldPoint, List<WorldPoint>> transports,
-                      WorldPoint start, WorldPoint target, boolean avoidWilderness)
+                      WorldPoint start, WorldPoint target, boolean avoidWilderness,
+                      boolean restrictToF2P)
     {
         this.map = map;
         this.transports = transports;
         this.target = target;
         this.start = new Node(start, null);
         this.avoidWilderness = avoidWilderness;
+        this.restrictToF2P = restrictToF2P;
         nearest = null;
     }
 
@@ -115,6 +118,11 @@ public class Pathfinder
             return;
         }
 
+        if (restrictToF2P && !isF2PArea(neighbor))
+        {
+            return;
+        }
+
         if (!visited.add(neighbor))
         {
             return;
@@ -126,6 +134,59 @@ public class Pathfinder
     private static boolean isInWilderness(WorldPoint p)
     {
         return WILDERNESS_ABOVE.distanceTo(p) == 0 || WILDERNESS_BELOW.distanceTo(p) == 0;
+    }
+
+    /**
+     * Checks if a tile is within the F2P area of the OSRS world.
+     * Used to prevent routing through members-only areas on F2P worlds.
+     */
+    private static boolean isF2PArea(WorldPoint p)
+    {
+        int x = p.getX();
+        int y = p.getY();
+
+        // Non-surface areas (underground, instances) — allow all.
+        // These are only reachable via transports that start in F2P areas.
+        if (y < 2560 || y > 4096)
+        {
+            return true;
+        }
+
+        // Southern F2P mainland (Rimmington, Port Sarim, Mudskipper Point,
+        // Draynor, Lumbridge, Al Kharid, southern Falador)
+        // x: 2880-3424, y: 2560-3399
+        if (x >= 2880 && x <= 3424 && y >= 2560 && y < 3400)
+        {
+            return true;
+        }
+
+        // Northern F2P + Wilderness (narrower x to exclude Taverly/Burthorpe)
+        // Includes Ice Mountain, Edgeville, Barbarian Village, Varrock, GE, Wilderness
+        // x: 2944-3424, y: 3400-4096
+        if (x >= 2944 && x <= 3424 && y >= 3400 && y <= 4096)
+        {
+            return true;
+        }
+
+        // Karamja F2P area (Musa Point, banana plantation, volcano, fishing docks)
+        if (x >= 2820 && x <= 2970 && y >= 3120 && y <= 3250)
+        {
+            return true;
+        }
+
+        // Corsair Cove (F2P area)
+        if (x >= 2432 && x <= 2656 && y >= 2816 && y <= 3040)
+        {
+            return true;
+        }
+
+        // Crandor island
+        if (x >= 2810 && x <= 2870 && y >= 3220 && y <= 3310)
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static class Node

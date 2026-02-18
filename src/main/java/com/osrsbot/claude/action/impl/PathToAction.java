@@ -13,6 +13,7 @@ import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.callback.ClientThread;
 
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Random;
 
@@ -52,19 +53,27 @@ public class PathToAction
             return ActionResult.failure(ActionType.PATH_TO, "Invalid target coordinates");
         }
 
-        // Get player position on client thread
-        WorldPoint playerPos;
+        // Get player position, world type, and agility level on client thread
+        Object[] clientData;
         try
         {
-            playerPos = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+            clientData = ClientThreadRunner.runOnClientThread(clientThread, () -> {
                 Player local = client.getLocalPlayer();
-                return local != null ? local.getWorldLocation() : null;
+                WorldPoint pos = local != null ? local.getWorldLocation() : null;
+                EnumSet<WorldType> worldType = client.getWorldType();
+                boolean members = worldType != null && worldType.contains(WorldType.MEMBERS);
+                int agility = client.getRealSkillLevel(Skill.AGILITY);
+                return new Object[]{ pos, members, agility };
             });
         }
         catch (Throwable t)
         {
             return ActionResult.failure(ActionType.PATH_TO, "Failed to get player position");
         }
+
+        WorldPoint playerPos = (WorldPoint) clientData[0];
+        boolean membersWorld = (boolean) clientData[1];
+        int agilityLevel = (int) clientData[2];
 
         if (playerPos == null)
         {
@@ -80,8 +89,8 @@ public class PathToAction
             return ActionResult.success(ActionType.PATH_TO);
         }
 
-        // Get or compute path
-        List<WorldPoint> path = pathfinderService.getPath(playerPos, target);
+        // Get or compute path (restricted to F2P areas + filtered by agility level)
+        List<WorldPoint> path = pathfinderService.getPath(playerPos, target, membersWorld, agilityLevel);
         if (path == null || path.isEmpty())
         {
             return ActionResult.failure(ActionType.PATH_TO,
@@ -99,14 +108,14 @@ public class PathToAction
         int remaining = path.size() - currentIdx - 1;
 
         // Scan ahead for the next transport step
-        int transportIdx = findNextTransport(path, currentIdx, pathfinderService);
+        int transportIdx = findNextTransport(path, currentIdx, pathfinderService, membersWorld);
 
         if (transportIdx >= 0 && transportIdx - currentIdx <= MAX_WAYPOINT_DIST)
         {
             // There's a transport within walking range — handle it
             WorldPoint transportStart = path.get(transportIdx);
             WorldPoint transportEnd = path.get(transportIdx + 1);
-            Transport transport = pathfinderService.getTransportBetween(transportStart, transportEnd);
+            Transport transport = pathfinderService.getTransportBetween(transportStart, transportEnd, membersWorld);
 
             if (transport != null)
             {
@@ -346,11 +355,12 @@ public class PathToAction
      * A transport step is where path[i] → path[i+1] has a matching transport entry.
      */
     private static int findNextTransport(List<WorldPoint> path, int currentIdx,
-                                          PathfinderService pathfinderService)
+                                          PathfinderService pathfinderService,
+                                          boolean membersWorld)
     {
         for (int i = currentIdx; i < path.size() - 1; i++)
         {
-            Transport t = pathfinderService.getTransportBetween(path.get(i), path.get(i + 1));
+            Transport t = pathfinderService.getTransportBetween(path.get(i), path.get(i + 1), membersWorld);
             if (t != null)
             {
                 return i;
