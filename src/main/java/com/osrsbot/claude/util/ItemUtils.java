@@ -38,10 +38,14 @@ public class ItemUtils
         {
             if (child.getItemId() > 0)
             {
-                String itemName = itemManager.getItemComposition(child.getItemId()).getName();
-                if (itemName != null && itemName.equalsIgnoreCase(name))
+                net.runelite.api.ItemComposition comp = itemManager.getItemComposition(child.getItemId());
+                if (comp != null)
                 {
-                    return child;
+                    String itemName = comp.getName();
+                    if (itemName != null && itemName.equalsIgnoreCase(name))
+                    {
+                        return child;
+                    }
                 }
             }
         }
@@ -50,7 +54,8 @@ public class ItemUtils
 
     public String getItemName(Client client, int itemId)
     {
-        return itemManager.getItemComposition(itemId).getName();
+        net.runelite.api.ItemComposition comp = itemManager.getItemComposition(itemId);
+        return comp != null ? comp.getName() : null;
     }
 
     public Point getWidgetScreenPoint(Widget widget)

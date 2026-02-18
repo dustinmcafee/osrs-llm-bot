@@ -13,9 +13,13 @@ import com.osrsbot.claude.state.GameStateReader;
 import com.osrsbot.claude.state.GameStateSerializer;
 import com.osrsbot.claude.state.GameStateSnapshot;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
+import net.runelite.api.Hitsplat;
+import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameTick;
+import net.runelite.api.events.HitsplatApplied;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -76,6 +80,8 @@ public class ClaudeBotPlugin extends Plugin
 
     private int tickCounter = 0;
     private final AtomicBoolean awaitingResponse = new AtomicBoolean(false);
+    private volatile boolean active = false;
+    private volatile int generation = 0;
     private String lastSerializedState = "";
     private String lastClaudeResponse = "";
     private String botStatus = "Idle";
@@ -94,6 +100,7 @@ public class ClaudeBotPlugin extends Plugin
             if (!config.apiKey().isEmpty())
             {
                 brainClient.initialize(config.apiKey(), config.model(), config.maxTokens());
+                brainClient.setLogApiCalls(config.logApiCalls());
                 String systemPrompt = systemPromptBuilder.build(config.task());
                 brainClient.setSystemPrompt(systemPrompt);
                 System.out.println("[ClaudeBot] brain initialized with model: " + config.model());
@@ -104,7 +111,8 @@ public class ClaudeBotPlugin extends Plugin
             }
 
             // Initialize conversation manager
-            conversationManager.setMaxExchanges(config.contextWindowSize());
+            conversationManager.setRecentCount(config.contextWindowSize());
+            conversationManager.setMaxSessionNotesChars(config.memoryBudget());
 
             // Initialize humanization
             humanSimulator.initialize(
@@ -124,6 +132,8 @@ public class ClaudeBotPlugin extends Plugin
             // Configure state reader
             gameStateReader.setScanRadius(config.nearbyEntityRadius());
 
+            generation++;
+            active = true;
             botStatus = "Ready";
             System.out.println("[ClaudeBot] startUp() complete - status: Ready");
             System.out.println("[ClaudeBot] enabled=" + config.enabled() + " showOverlay=" + config.showOverlay());
@@ -139,13 +149,62 @@ public class ClaudeBotPlugin extends Plugin
     @Override
     protected void shutDown()
     {
-        log.info("Claude Bot plugin shutting down");
+        System.out.println("[ClaudeBot] shutDown() called — deactivating plugin");
+
+        // Deactivate first so in-flight async callbacks are ignored
+        active = false;
+        awaitingResponse.set(false);
+
         overlayManager.remove(overlay);
         brainClient.shutdown();
         actionExecutor.shutdown();
         actionQueue.clear();
         conversationManager.clear();
+        gameStateReader.clearMessages();
+
+        // Reset all state for clean re-enable
+        tickCounter = 0;
+        lastSerializedState = "";
+        lastClaudeResponse = "";
         botStatus = "Stopped";
+
+        System.out.println("[ClaudeBot] shutDown() complete — all state cleared");
+    }
+
+    @Subscribe
+    public void onChatMessage(ChatMessage event)
+    {
+        ChatMessageType type = event.getType();
+        if (type == ChatMessageType.GAMEMESSAGE
+            || type == ChatMessageType.SPAM
+            || type == ChatMessageType.MESBOX
+            || type == ChatMessageType.ENGINE)
+        {
+            String text = event.getMessage();
+            if (text != null)
+            {
+                // Strip HTML color tags from the message
+                text = text.replaceAll("<[^>]+>", "").trim();
+                if (!text.isEmpty())
+                {
+                    gameStateReader.onGameMessage(text);
+                }
+            }
+        }
+    }
+
+    @Subscribe
+    public void onHitsplatApplied(HitsplatApplied event)
+    {
+        if (event.getActor() == client.getLocalPlayer())
+        {
+            Hitsplat hitsplat = event.getHitsplat();
+            if (hitsplat.isMine())
+            {
+                // Player took a hit (damage or block) — definitive combat signal
+                gameStateReader.onPlayerHitsplat();
+            }
+        }
     }
 
     @Subscribe
@@ -167,6 +226,9 @@ public class ClaudeBotPlugin extends Plugin
 
     private void doGameTick()
     {
+        // Decay combat countdown every tick (must run even when bot is disabled)
+        gameStateReader.onGameTick();
+
         if (!config.enabled())
         {
             botStatus = "Disabled";
@@ -220,11 +282,34 @@ public class ClaudeBotPlugin extends Plugin
         // Capture and serialize game state
         GameStateSnapshot snapshot = gameStateReader.capture();
         String serialized = gameStateSerializer.serialize(snapshot);
-        lastSerializedState = serialized;
+
+        // Prepend action results from the last batch so Claude knows what worked/failed
+        List<ActionExecutor.ExecutedAction> results = actionExecutor.getAndClearResults();
+        if (!results.isEmpty())
+        {
+            StringBuilder resultBlock = new StringBuilder();
+            resultBlock.append("[ACTION_RESULTS] Your previous actions:\n");
+            for (int i = 0; i < results.size(); i++)
+            {
+                resultBlock.append("  ").append(i + 1).append(". ")
+                    .append(results.get(i).describe()).append("\n");
+            }
+            serialized = resultBlock.toString() + serialized;
+        }
+
+        // Prepend compressed session notes so Claude remembers earlier activity
+        String sessionNotes = conversationManager.getSessionNotes();
+        if (!sessionNotes.isEmpty())
+        {
+            serialized = "[SESSION_NOTES] Summary of earlier activity:\n" + sessionNotes + "\n" + serialized;
+        }
+
+        final String gameState = serialized;
+        lastSerializedState = gameState;
 
         if (config.logState())
         {
-            log.info("Game state:\n{}", serialized);
+            System.out.println("[ClaudeBot] Game state:\n" + gameState);
         }
 
         // Query Claude
@@ -236,19 +321,32 @@ public class ClaudeBotPlugin extends Plugin
 
         botStatus = "Querying Claude...";
         awaitingResponse.set(true);
+        brainClient.setLogApiCalls(config.logApiCalls());
+
+        final int queryGeneration = generation;
 
         CompletableFuture<String> future = brainClient.queryAsync(
             conversationManager.getHistory(),
-            serialized
+            gameState
         );
 
         future.thenAccept(response -> {
             awaitingResponse.set(false);
+
+            // Guard: if plugin was toggled while API call was in flight, discard the response
+            if (!active || generation != queryGeneration)
+            {
+                System.out.println("[ClaudeBot] Discarding stale API response (plugin was restarted)");
+                return;
+            }
+
             lastClaudeResponse = response;
 
-            if (config.logApiCalls())
+            // Log Claude's reasoning if present
+            String reasoning = responseParser.extractReasoning(response);
+            if (reasoning != null)
             {
-                log.info("Claude response: {}", response);
+                System.out.println("[ClaudeBot] Claude's thinking: " + reasoning);
             }
 
             // Parse and enqueue actions
@@ -259,11 +357,15 @@ public class ClaudeBotPlugin extends Plugin
             }
 
             // Add to conversation history
-            conversationManager.addExchange(serialized, response);
+            conversationManager.addExchange(gameState, response);
 
             botStatus = "Queued " + actions.size() + " actions";
         }).exceptionally(e -> {
             awaitingResponse.set(false);
+            if (!active || generation != queryGeneration)
+            {
+                return null;
+            }
             botStatus = "API Error: " + e.getMessage();
             System.err.println("[ClaudeBot] Claude query FAILED: " + e.getClass().getName() + ": " + e.getMessage());
             e.printStackTrace(System.err);

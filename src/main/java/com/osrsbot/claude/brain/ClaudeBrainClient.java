@@ -20,6 +20,7 @@ public class ClaudeBrainClient
     private String model;
     private int maxTokens;
     private String systemPrompt;
+    private boolean logApiCalls;
 
     public void initialize(String apiKey, String model, int maxTokens)
     {
@@ -39,6 +40,11 @@ public class ClaudeBrainClient
     public void setSystemPrompt(String systemPrompt)
     {
         this.systemPrompt = systemPrompt;
+    }
+
+    public void setLogApiCalls(boolean logApiCalls)
+    {
+        this.logApiCalls = logApiCalls;
     }
 
     public CompletableFuture<String> queryAsync(List<ConversationManager.Exchange> conversationHistory, String currentState)
@@ -78,19 +84,82 @@ public class ClaudeBrainClient
                 .messages(messages)
                 .build();
 
+            if (logApiCalls)
+            {
+                StringBuilder logMsg = new StringBuilder();
+                logMsg.append("\n╔══════════════════════════════════════════════════════════════\n");
+                logMsg.append("║  CLAUDE API REQUEST\n");
+                logMsg.append("║  Model: ").append(model).append("  Max Tokens: ").append(maxTokens).append("\n");
+                logMsg.append("╠══════════════════════════════════════════════════════════════\n");
+                logMsg.append("║  SYSTEM PROMPT:\n");
+                for (String line : systemPrompt.split("\n"))
+                {
+                    logMsg.append("║  ").append(line).append("\n");
+                }
+                logMsg.append("╠══════════════════════════════════════════════════════════════\n");
+                logMsg.append("║  CONVERSATION (").append(conversationHistory.size()).append(" prior exchanges + current state):\n");
+                int exchangeNum = 1;
+                for (ConversationManager.Exchange exchange : conversationHistory)
+                {
+                    logMsg.append("║  ── Exchange ").append(exchangeNum++).append(" ──\n");
+                    logMsg.append("║  [USER]  ").append(truncate(exchange.getUserMessage(), 200)).append("\n");
+                    logMsg.append("║  [ASST]  ").append(truncate(exchange.getAssistantMessage(), 200)).append("\n");
+                }
+                logMsg.append("║  ── Current State ──\n");
+                for (String line : currentState.split("\n"))
+                {
+                    logMsg.append("║  ").append(line).append("\n");
+                }
+                logMsg.append("╚══════════════════════════════════════════════════════════════");
+                System.out.println(logMsg.toString());
+            }
+
             Message response = anthropicClient.messages().create(params);
 
-            return response.content().stream()
+            String responseText = response.content().stream()
                 .filter(ContentBlock::isText)
                 .map(block -> block.asText().text())
                 .collect(Collectors.joining());
+
+            if (logApiCalls)
+            {
+                StringBuilder logMsg = new StringBuilder();
+                logMsg.append("\n╔══════════════════════════════════════════════════════════════\n");
+                logMsg.append("║  CLAUDE API RESPONSE\n");
+                logMsg.append("║  Usage: input=").append(response.usage().inputTokens())
+                    .append(" output=").append(response.usage().outputTokens())
+                    .append("  Stop: ").append(response.stopReason()).append("\n");
+                logMsg.append("╠══════════════════════════════════════════════════════════════\n");
+                for (String line : responseText.split("\n"))
+                {
+                    logMsg.append("║  ").append(line).append("\n");
+                }
+                logMsg.append("╚══════════════════════════════════════════════════════════════");
+                System.out.println(logMsg.toString());
+            }
+
+            return responseText;
         }
         catch (Throwable e)
         {
             System.err.println("[ClaudeBot] Claude API error: " + e.getClass().getName() + ": " + e.getMessage());
-            e.printStackTrace(System.err);
+            if (logApiCalls)
+            {
+                System.err.println("╔══════════════════════════════════════════════════════════════\n"
+                    + "║  CLAUDE API ERROR: " + e.getClass().getName() + "\n"
+                    + "║  " + e.getMessage() + "\n"
+                    + "╚══════════════════════════════════════════════════════════════");
+            }
             return "[{\"action\":\"WAIT\",\"ticks\":5}]";
         }
+    }
+
+    private static String truncate(String text, int maxLen)
+    {
+        if (text == null) return "(null)";
+        String oneLine = text.replace("\n", " ").replace("\r", "");
+        if (oneLine.length() <= maxLen) return oneLine;
+        return oneLine.substring(0, maxLen) + "... (" + text.length() + " chars total)";
     }
 
     public void shutdown()

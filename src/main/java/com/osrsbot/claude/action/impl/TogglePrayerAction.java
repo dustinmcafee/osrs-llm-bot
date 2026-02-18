@@ -9,65 +9,35 @@ import net.runelite.api.Client;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.awt.Point;
+import java.awt.Rectangle;
 
+/**
+ * Toggles a prayer on or off by dynamically searching prayer widget children
+ * for matching action text. This avoids hardcoded widget child indices which
+ * are fragile and have caused bugs (Eagle Eye overwriting Smite, etc.).
+ */
 public class TogglePrayerAction
 {
-    private static final Map<String, int[]> PRAYER_WIDGETS = new HashMap<>();
-
-    static
-    {
-        PRAYER_WIDGETS.put("thick skin", new int[]{541, 5});
-        PRAYER_WIDGETS.put("burst of strength", new int[]{541, 6});
-        PRAYER_WIDGETS.put("clarity of thought", new int[]{541, 7});
-        PRAYER_WIDGETS.put("sharp eye", new int[]{541, 8});
-        PRAYER_WIDGETS.put("mystic will", new int[]{541, 9});
-        PRAYER_WIDGETS.put("rock skin", new int[]{541, 10});
-        PRAYER_WIDGETS.put("superhuman strength", new int[]{541, 11});
-        PRAYER_WIDGETS.put("improved reflexes", new int[]{541, 12});
-        PRAYER_WIDGETS.put("rapid restore", new int[]{541, 13});
-        PRAYER_WIDGETS.put("rapid heal", new int[]{541, 14});
-        PRAYER_WIDGETS.put("protect item", new int[]{541, 15});
-        PRAYER_WIDGETS.put("hawk eye", new int[]{541, 16});
-        PRAYER_WIDGETS.put("protect from magic", new int[]{541, 17});
-        PRAYER_WIDGETS.put("protect from missiles", new int[]{541, 18});
-        PRAYER_WIDGETS.put("protect from melee", new int[]{541, 19});
-        PRAYER_WIDGETS.put("retribution", new int[]{541, 20});
-        PRAYER_WIDGETS.put("redemption", new int[]{541, 21});
-        PRAYER_WIDGETS.put("smite", new int[]{541, 22});
-        PRAYER_WIDGETS.put("preserve", new int[]{541, 23});
-        PRAYER_WIDGETS.put("chivalry", new int[]{541, 24});
-        PRAYER_WIDGETS.put("piety", new int[]{541, 25});
-        PRAYER_WIDGETS.put("rigour", new int[]{541, 26});
-        PRAYER_WIDGETS.put("augury", new int[]{541, 27});
-        PRAYER_WIDGETS.put("eagle eye", new int[]{541, 22});
-        PRAYER_WIDGETS.put("mystic might", new int[]{541, 23});
-    }
+    private static final int PRAYER_GROUP_ID = 541;
 
     public static ActionResult execute(Client client, HumanSimulator human, ClientThread clientThread, BotAction action)
     {
-        String prayerName = action.getName().toLowerCase().trim();
-        int[] widgetIds = PRAYER_WIDGETS.get(prayerName);
-
-        if (widgetIds == null)
+        String prayerName = action.getName();
+        if (prayerName == null || prayerName.isEmpty())
         {
-            return ActionResult.failure(ActionType.TOGGLE_PRAYER, "Unknown prayer: " + action.getName());
+            return ActionResult.failure(ActionType.TOGGLE_PRAYER, "No prayer name provided");
         }
 
-        // Phase 1: Widget lookup on client thread
-        java.awt.Point point;
+        // Open prayer tab if not open (F-key with widget-click fallback)
+        OpenTabAction.ensureTab(client, human, clientThread, "prayer");
+
+        // Phase 1: Find prayer widget by searching action text on client thread
+        Point point;
         try
         {
-            final int groupId = widgetIds[0];
-            final int childId = widgetIds[1];
-            point = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                Widget prayerWidget = client.getWidget(groupId, childId);
-                if (prayerWidget == null || prayerWidget.isHidden()) return null;
-                java.awt.Rectangle bounds = prayerWidget.getBounds();
-                if (bounds == null) return null;
-                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
-            });
+            point = ClientThreadRunner.runOnClientThread(clientThread, () ->
+                findPrayerWidget(client, prayerName));
         }
         catch (Throwable t)
         {
@@ -77,11 +47,54 @@ public class TogglePrayerAction
 
         if (point == null)
         {
-            return ActionResult.failure(ActionType.TOGGLE_PRAYER, "Prayer widget not visible: " + action.getName());
+            return ActionResult.failure(ActionType.TOGGLE_PRAYER, "Prayer not found: " + prayerName);
         }
 
         // Phase 2: Click on background thread
         human.moveAndClick(point.x, point.y);
         return ActionResult.success(ActionType.TOGGLE_PRAYER);
+    }
+
+    /**
+     * Searches prayer widget children for one whose actions contain the prayer name.
+     * Actions look like "Activate Protect from Melee" or "Deactivate Smite".
+     */
+    private static Point findPrayerWidget(Client client, String prayerName)
+    {
+        String lowerName = prayerName.toLowerCase().trim();
+
+        for (int childIdx = 0; childIdx < 50; childIdx++)
+        {
+            Widget child = client.getWidget(PRAYER_GROUP_ID, childIdx);
+            if (child == null || child.isHidden()) continue;
+
+            String[] actions = child.getActions();
+            if (actions != null)
+            {
+                for (String act : actions)
+                {
+                    if (act != null && act.toLowerCase().contains(lowerName))
+                    {
+                        Rectangle bounds = child.getBounds();
+                        if (bounds != null && bounds.width > 0)
+                        {
+                            return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                        }
+                    }
+                }
+            }
+
+            // Also check widget name
+            String widgetName = child.getName();
+            if (widgetName != null && widgetName.toLowerCase().contains(lowerName))
+            {
+                Rectangle bounds = child.getBounds();
+                if (bounds != null && bounds.width > 0)
+                {
+                    return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                }
+            }
+        }
+        return null;
     }
 }

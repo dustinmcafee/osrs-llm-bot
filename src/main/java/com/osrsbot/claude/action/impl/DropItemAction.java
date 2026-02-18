@@ -10,6 +10,8 @@ import net.runelite.api.Client;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 
+import java.awt.event.KeyEvent;
+
 public class DropItemAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
@@ -37,11 +39,25 @@ public class DropItemAction
             return ActionResult.failure(ActionType.DROP_ITEM, "Item not found: " + action.getName());
         }
 
-        // Phase 2: Right-click select on background thread (MenuInteractor handles client thread internally)
-        boolean selected = human.moveAndRightClickSelect(client, point.x, point.y, "Drop", action.getName());
-        if (!selected)
+        // Phase 2: Drop the item
+        // Use shift-click (fast) by default, fall back to right-click menu if option is "menu"
+        String option = action.getOption();
+        if (option != null && option.equalsIgnoreCase("menu"))
         {
-            return ActionResult.failure(ActionType.DROP_ITEM, "Drop option not found for: " + action.getName());
+            // Slow right-click drop via menu
+            boolean selected = human.moveAndRightClickSelect(client, point.x, point.y, "Drop", action.getName());
+            if (!selected)
+            {
+                return ActionResult.failure(ActionType.DROP_ITEM, "Drop option not found for: " + action.getName());
+            }
+        }
+        else
+        {
+            // Fast shift-click drop (how humans actually do it)
+            human.keyDown(KeyEvent.VK_SHIFT);
+            human.moveAndClick(point.x, point.y);
+            human.keyUp(KeyEvent.VK_SHIFT);
+            human.shortPause();
         }
 
         return ActionResult.success(ActionType.DROP_ITEM);

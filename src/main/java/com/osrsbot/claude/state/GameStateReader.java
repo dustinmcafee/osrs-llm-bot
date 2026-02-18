@@ -9,6 +9,7 @@ import net.runelite.client.game.ItemManager;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import java.util.*;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 import lombok.extern.slf4j.Slf4j;
@@ -23,11 +24,66 @@ public class GameStateReader
     @Inject
     private ItemManager itemManager;
 
-    private int scanRadius = 15;
+    private int scanRadius = 25;
+
+    /**
+     * Combat detection via hitsplat events (most reliable signal).
+     * Decremented each game tick, reset to COMBAT_TIMEOUT when player takes a hit.
+     * Matches RuneLite's IdleNotifierPlugin approach.
+     */
+    private static final int COMBAT_TIMEOUT_TICKS = 8; // slowest monster attack speed
+    private int combatCountdown = 0;
+
+    /**
+     * Event-based game message buffer. Messages are added by the plugin via
+     * onGameMessage() when ChatMessage events fire. This is far more reliable
+     * than iterating client.getMessages() which has no guaranteed order.
+     */
+    private final ConcurrentLinkedDeque<String> gameMessageBuffer = new ConcurrentLinkedDeque<>();
+    private static final int MAX_MESSAGE_BUFFER = 20;
 
     public void setScanRadius(int radius)
     {
         this.scanRadius = radius;
+    }
+
+    /**
+     * Called by ClaudeBotPlugin when a ChatMessage event fires.
+     * Maintains a chronological buffer of recent game messages.
+     */
+    public void onGameMessage(String message)
+    {
+        if (message == null || message.isEmpty()) return;
+        gameMessageBuffer.addFirst(message);
+        while (gameMessageBuffer.size() > MAX_MESSAGE_BUFFER)
+        {
+            gameMessageBuffer.removeLast();
+        }
+    }
+
+    /**
+     * Clears the message buffer. Called on plugin shutdown.
+     */
+    public void clearMessages()
+    {
+        gameMessageBuffer.clear();
+    }
+
+    /**
+     * Called by ClaudeBotPlugin when a HitsplatApplied event fires on the local player.
+     * This is the most reliable combat signal — hitsplats only appear during real combat.
+     */
+    public void onPlayerHitsplat()
+    {
+        combatCountdown = COMBAT_TIMEOUT_TICKS;
+    }
+
+    /**
+     * Called each game tick to decay the combat countdown.
+     */
+    public void onGameTick()
+    {
+        combatCountdown = Math.max(combatCountdown - 1, 0);
     }
 
     public GameStateSnapshot capture()
@@ -55,6 +111,68 @@ public class GameStateReader
 
         WorldPoint pos = local.getWorldLocation();
         boolean isMoving = client.getLocalDestinationLocation() != null;
+
+        // Multi-signal combat detection (matches RuneLite IdleNotifierPlugin approach).
+        // npc.getInteracting() == local just means FACING — happens in dialogue too.
+        // We use three signals, any one is sufficient:
+        //
+        // 1. Hitsplat countdown: player recently took a hit (definitive combat signal)
+        // 2. Attackable NPC targeting player: NPC has "Attack" in its actions AND is
+        //    targeting the player. Tutorial/dialogue NPCs only have "Talk-to".
+        // 3. NPC health bar visible: NPC has been hit (player attacked it)
+        boolean isInCombat = false;
+
+        // Signal 1: Player recently took a hitsplat
+        if (combatCountdown > 0)
+        {
+            isInCombat = true;
+        }
+
+        // Signal 2: Player targeting an attackable NPC that's targeting back
+        if (!isInCombat)
+        {
+            Actor playerTarget = local.getInteracting();
+            if (playerTarget instanceof NPC)
+            {
+                NPC targetNpc = (NPC) playerTarget;
+                if (targetNpc.getInteracting() == local
+                    && !targetNpc.isDead()
+                    && isAttackableNpc(targetNpc))
+                {
+                    isInCombat = true;
+                }
+            }
+        }
+
+        // Signal 3: Any attackable NPC targeting the player (being attacked)
+        if (!isInCombat)
+        {
+            for (NPC npc : client.getNpcs())
+            {
+                if (npc.getInteracting() == local
+                    && !npc.isDead()
+                    && isAttackableNpc(npc))
+                {
+                    isInCombat = true;
+                    break;
+                }
+            }
+        }
+
+        // Signal 4: NPC health bar visible (player has hit the NPC)
+        if (!isInCombat)
+        {
+            Actor playerTarget = local.getInteracting();
+            if (playerTarget instanceof NPC)
+            {
+                NPC targetNpc = (NPC) playerTarget;
+                if (!targetNpc.isDead() && targetNpc.getHealthRatio() > 0)
+                {
+                    isInCombat = true;
+                }
+            }
+        }
+
         boolean isIdle = local.getAnimation() == AnimationID.IDLE
             && !isMoving
             && local.getInteracting() == null;
@@ -74,7 +192,7 @@ public class GameStateReader
             .plane(pos.getPlane())
             .animationId(local.getAnimation())
             .isMoving(isMoving)
-            .isInCombat(local.getInteracting() != null && local.getInteracting() instanceof NPC)
+            .isInCombat(isInCombat)
             .isIdle(isIdle)
             .attackLevel(client.getRealSkillLevel(Skill.ATTACK))
             .strengthLevel(client.getRealSkillLevel(Skill.STRENGTH))
@@ -99,6 +217,12 @@ public class GameStateReader
             .thievingLevel(client.getRealSkillLevel(Skill.THIEVING))
             .herbloreLevel(client.getRealSkillLevel(Skill.HERBLORE))
             .runecraftingLevel(client.getRealSkillLevel(Skill.RUNECRAFT))
+            // Boosted combat levels (includes potion boosts)
+            .boostedAttack(client.getBoostedSkillLevel(Skill.ATTACK))
+            .boostedStrength(client.getBoostedSkillLevel(Skill.STRENGTH))
+            .boostedDefence(client.getBoostedSkillLevel(Skill.DEFENCE))
+            .boostedRanged(client.getBoostedSkillLevel(Skill.RANGED))
+            .boostedMagic(client.getBoostedSkillLevel(Skill.MAGIC))
             .build();
     }
 
@@ -114,9 +238,11 @@ public class GameStateReader
             for (int i = 0; i < containerItems.length && i < 28; i++)
             {
                 Item item = containerItems[i];
+                if (item == null) continue;
                 if (item.getId() != -1 && item.getId() != 0)
                 {
-                    String name = itemManager.getItemComposition(item.getId()).getName();
+                    net.runelite.api.ItemComposition comp = itemManager.getItemComposition(item.getId());
+                    String name = comp != null ? comp.getName() : "Unknown";
                     items.add(InventoryState.ItemSlot.builder()
                         .slot(i)
                         .itemId(item.getId())
@@ -164,9 +290,11 @@ public class GameStateReader
                 if (slotIndices[i] < items.length)
                 {
                     Item item = items[slotIndices[i]];
+                    if (item == null) continue;
                     if (item.getId() != -1 && item.getId() != 0)
                     {
-                        String name = itemManager.getItemComposition(item.getId()).getName();
+                        net.runelite.api.ItemComposition comp = itemManager.getItemComposition(item.getId());
+                        String name = comp != null ? comp.getName() : "Unknown";
                         slots.put(slotNames[i], EquipmentState.EquipmentSlot.builder()
                             .slotName(slotNames[i])
                             .itemId(item.getId())
@@ -329,7 +457,8 @@ public class GameStateReader
                     int dist = itemPos.distanceTo(playerPos);
                     if (dist > scanRadius) continue;
 
-                    String name = itemManager.getItemComposition(tileItem.getId()).getName();
+                    net.runelite.api.ItemComposition comp = itemManager.getItemComposition(tileItem.getId());
+                    String name = comp != null ? comp.getName() : "Unknown";
                     entities.add(NearbyEntity.builder()
                         .type(NearbyEntity.EntityType.GROUND_ITEM)
                         .id(tileItem.getId())
@@ -428,6 +557,21 @@ public class GameStateReader
             }
         }
 
+        // Current world
+        int currentWorld = client.getWorld();
+
+        // Poison status (VarPlayer 102): negative = immune, 0 = clean, >0 = poisoned/venomed
+        int poisonStatus = client.getVarpValue(102);
+
+        // Attack style (VarPlayer 43): 0-3 maps to combat style buttons
+        int attackStyleIndex = client.getVarpValue(43);
+
+        // Active prayers — search prayer widget actions for "Deactivate" prefix
+        List<String> activePrayers = readActivePrayers();
+
+        // NPCs targeting (attacking) the player
+        List<String> attackingNpcs = readAttackingNpcs(local);
+
         return EnvironmentState.builder()
             .regionId(regionId)
             .plane(client.getPlane())
@@ -453,6 +597,12 @@ public class GameStateReader
             .activeTabName(getTabName(activeTab))
             .tutorialInstruction(tutorialInstruction)
             .interactingWith(interactingWith)
+            .currentWorld(currentWorld)
+            .poisonStatus(poisonStatus)
+            .attackStyleIndex(attackStyleIndex)
+            .attackStyleName(getAttackStyleName(attackStyleIndex))
+            .activePrayers(activePrayers)
+            .attackingNpcs(attackingNpcs)
             .build();
     }
 
@@ -514,56 +664,41 @@ public class GameStateReader
     }
 
     /**
-     * Reads recent game messages (GAMEMESSAGE type) from the chatbox.
-     * These contain critical feedback like "You can't reach that",
-     * "You need to fight the rats first", etc.
+     * Drains recent game messages from the event-based buffer.
+     * Each call returns only NEW messages since the last call, preventing
+     * stale messages like "I can't reach that" from repeating on every tick.
      */
     private List<String> readRecentGameMessages(int maxMessages)
     {
         List<String> messages = new ArrayList<>();
-        try
+        String msg;
+        while ((msg = gameMessageBuffer.pollFirst()) != null)
         {
-            // Iterate all messages and collect recent GAMEMESSAGE/SPAM/MESBOX types
-            for (MessageNode node : client.getMessages())
-            {
-                ChatMessageType type = node.getType();
-                if (type == ChatMessageType.GAMEMESSAGE
-                    || type == ChatMessageType.SPAM
-                    || type == ChatMessageType.MESBOX)
-                {
-                    String text = stripTags(node.getValue());
-                    if (text != null && !text.isEmpty())
-                    {
-                        messages.add(text);
-                    }
-                }
-                if (messages.size() >= maxMessages) break;
-            }
+            messages.add(msg);
+            if (messages.size() >= maxMessages) break;
         }
-        catch (Throwable t)
-        {
-            // Message iteration can fail if the message buffer is being modified
-        }
+        // Discard any remaining messages beyond the limit
+        gameMessageBuffer.clear();
         return messages;
     }
 
     /**
-     * Reads the tutorial overlay instruction text (widget group 613).
-     * This is the panel that tells players what to do on Tutorial Island,
-     * e.g., "Click on the door to leave" or "Now equip the bronze dagger."
+     * Reads the tutorial overlay instruction text.
+     * Searches multiple widget groups that can contain tutorial instructions
+     * in different OSRS/RuneLite versions.
      */
     private String readTutorialInstruction()
     {
         try
         {
-            // Widget group 263 is the tutorial progress/instruction panel
-            // Try both 263 and 613 as different RuneLite versions may use either
-            for (int groupId : new int[]{ 263, 613 })
+            // Widget groups that may contain tutorial instructions:
+            // 263 = tutorial progress panel, 613 = alternative tutorial overlay, 664 = newer tutorial
+            for (int groupId : new int[]{ 263, 613, 664 })
             {
                 Widget overlay = client.getWidget(groupId, 0);
                 if (overlay == null || overlay.isHidden()) continue;
 
-                // Search children for non-empty text content
+                // Search direct children for non-empty text content
                 StringBuilder instructionText = new StringBuilder();
                 for (int childIdx = 0; childIdx < 30; childIdx++)
                 {
@@ -571,10 +706,26 @@ public class GameStateReader
                     if (child == null || child.isHidden()) continue;
 
                     String text = stripTags(child.getText());
-                    if (text != null && !text.isEmpty() && text.length() > 5)
+                    if (text != null && !text.isEmpty() && text.length() > 2)
                     {
                         if (instructionText.length() > 0) instructionText.append(" ");
                         instructionText.append(text);
+                    }
+
+                    // Also search nested children (some tutorial widgets nest text)
+                    Widget[] nested = child.getChildren();
+                    if (nested != null)
+                    {
+                        for (Widget n : nested)
+                        {
+                            if (n == null || n.isHidden()) continue;
+                            String nText = stripTags(n.getText());
+                            if (nText != null && !nText.isEmpty() && nText.length() > 2)
+                            {
+                                if (instructionText.length() > 0) instructionText.append(" ");
+                                instructionText.append(nText);
+                            }
+                        }
                     }
                 }
 
@@ -613,6 +764,85 @@ public class GameStateReader
         }
     }
 
+    /**
+     * Finds all NPCs currently targeting (attacking) the local player.
+     * This lets the brain know when the player is under attack, even if
+     * the player hasn't targeted them back.
+     */
+    private List<String> readAttackingNpcs(Player local)
+    {
+        List<String> attackers = new ArrayList<>();
+        if (local == null) return attackers;
+        try
+        {
+            for (NPC npc : client.getNpcs())
+            {
+                if (npc.getInteracting() == local
+                    && npc.getName() != null
+                    && !npc.isDead()
+                    && isAttackableNpc(npc))
+                {
+                    attackers.add(npc.getName() + "(lvl:" + npc.getCombatLevel() + ")");
+                }
+            }
+        }
+        catch (Throwable t)
+        {
+            // NPC iteration can fail during world loading
+        }
+        return attackers;
+    }
+
+    /**
+     * Searches prayer widget children for actions starting with "Deactivate"
+     * to determine which prayers are currently active.
+     */
+    private List<String> readActivePrayers()
+    {
+        List<String> active = new ArrayList<>();
+        try
+        {
+            for (int childIdx = 0; childIdx < 50; childIdx++)
+            {
+                Widget child = client.getWidget(541, childIdx);
+                if (child == null || child.isHidden()) continue;
+
+                String[] actions = child.getActions();
+                if (actions != null)
+                {
+                    for (String act : actions)
+                    {
+                        if (act != null && act.startsWith("Deactivate "))
+                        {
+                            active.add(act.substring("Deactivate ".length()));
+                        }
+                    }
+                }
+            }
+        }
+        catch (Throwable t)
+        {
+            // Prayer widget may not be available
+        }
+        return active;
+    }
+
+    /**
+     * Maps attack style index (VarPlayer 43) to a human-readable name.
+     * Note: actual names depend on weapon type, these are generic labels.
+     */
+    private static String getAttackStyleName(int index)
+    {
+        switch (index)
+        {
+            case 0: return "Accurate";
+            case 1: return "Aggressive";
+            case 2: return "Controlled";
+            case 3: return "Defensive";
+            default: return "Unknown(" + index + ")";
+        }
+    }
+
     private static class HintArrowInfo
     {
         String type = null;
@@ -625,6 +855,25 @@ public class GameStateReader
     {
         Widget w = client.getWidget(groupId, 0);
         return w != null && !w.isHidden();
+    }
+
+    /**
+     * Checks if an NPC has "Attack" in its right-click actions.
+     * This is how RuneLite's IdleNotifierPlugin distinguishes combat NPCs from
+     * dialogue/tutorial NPCs. Shopkeepers, instructors, and quest NPCs only
+     * have "Talk-to" — they never have "Attack".
+     */
+    private static boolean isAttackableNpc(NPC npc)
+    {
+        NPCComposition comp = npc.getTransformedComposition();
+        if (comp == null) return false;
+        String[] actions = comp.getActions();
+        if (actions == null) return false;
+        for (String action : actions)
+        {
+            if ("Attack".equals(action)) return true;
+        }
+        return false;
     }
 
     /**

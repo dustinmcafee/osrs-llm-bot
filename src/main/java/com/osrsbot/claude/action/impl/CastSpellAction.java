@@ -5,6 +5,7 @@ import com.osrsbot.claude.action.ActionType;
 import com.osrsbot.claude.action.BotAction;
 import com.osrsbot.claude.human.HumanSimulator;
 import com.osrsbot.claude.util.ClientThreadRunner;
+import com.osrsbot.claude.util.ItemUtils;
 import com.osrsbot.claude.util.NpcUtils;
 import net.runelite.api.*;
 import net.runelite.api.widgets.Widget;
@@ -12,7 +13,6 @@ import net.runelite.client.callback.ClientThread;
 
 import java.awt.Point;
 import java.awt.Rectangle;
-import java.awt.event.KeyEvent;
 
 /**
  * Casts a spell from the spellbook, optionally targeting an NPC.
@@ -27,7 +27,7 @@ public class CastSpellAction
     private static final int SPELLBOOK_GROUP_ID = 218;
 
     public static ActionResult execute(Client client, HumanSimulator human, NpcUtils npcUtils,
-                                       ClientThread clientThread, BotAction action)
+                                       ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
         String spellName = action.getName();
         if (spellName == null || spellName.isEmpty())
@@ -49,11 +49,10 @@ public class CastSpellAction
             return ActionResult.failure(ActionType.CAST_SPELL, "Spellbook check failed: " + t.getMessage());
         }
 
-        // If magic tab isn't open, press the hotkey to open it
+        // If magic tab isn't open, open it (F-key with widget-click fallback)
         if (!tabOpen)
         {
-            human.pressKey(KeyEvent.VK_F6); // Magic tab hotkey
-            human.shortPause();
+            OpenTabAction.ensureTab(client, human, clientThread, "spellbook");
         }
 
         // Find the spell widget on client thread
@@ -74,13 +73,16 @@ public class CastSpellAction
         }
 
         Point spellPoint = (Point) spellData[0];
+        if (spellPoint == null)
+        {
+            return ActionResult.failure(ActionType.CAST_SPELL, "Spell widget has no screen bounds: " + spellName);
+        }
 
         // Phase 2: Click the spell widget with humanized mouse
         human.moveAndClick(spellPoint.x, spellPoint.y);
         human.shortPause();
 
         // If targeting an NPC, find and click it
-        String targetOption = action.getOption();
         String targetNpc = action.getNpc();
         if (targetNpc != null && !targetNpc.isEmpty())
         {
@@ -95,7 +97,10 @@ public class CastSpellAction
                     if (npc.getCanvasTilePoly() != null)
                     {
                         Rectangle bounds = npc.getCanvasTilePoly().getBounds();
-                        screenPoint = new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                        if (bounds != null)
+                        {
+                            screenPoint = new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                        }
                     }
                     return new Object[]{ screenPoint };
                 });
@@ -116,6 +121,40 @@ public class CastSpellAction
                 human.moveAndClick(npcPoint.x, npcPoint.y);
                 human.shortPause();
             }
+            return ActionResult.success(ActionType.CAST_SPELL);
+        }
+
+        // If targeting an inventory item (High Alch, Enchant, Superheat, etc.)
+        String targetItem = action.getItem();
+        if (targetItem != null && !targetItem.isEmpty())
+        {
+            // Open inventory tab so the item is visible
+            OpenTabAction.ensureTab(client, human, clientThread, "inventory");
+
+            Point itemPoint;
+            try
+            {
+                itemPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    Widget item = itemUtils.findInInventory(client, targetItem);
+                    if (item == null) return null;
+                    Rectangle bounds = item.getBounds();
+                    if (bounds == null) return null;
+                    return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                });
+            }
+            catch (Throwable t)
+            {
+                return ActionResult.failure(ActionType.CAST_SPELL, "Item target lookup failed: " + t.getMessage());
+            }
+
+            if (itemPoint == null)
+            {
+                return ActionResult.failure(ActionType.CAST_SPELL, "Target item not found: " + targetItem);
+            }
+
+            human.moveAndClick(itemPoint.x, itemPoint.y);
+            human.shortPause();
+            return ActionResult.success(ActionType.CAST_SPELL);
         }
 
         return ActionResult.success(ActionType.CAST_SPELL);

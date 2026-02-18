@@ -13,6 +13,9 @@ import lombok.extern.slf4j.Slf4j;
 
 import javax.inject.Inject;
 import javax.inject.Singleton;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -54,6 +57,52 @@ public class ActionExecutor
     private volatile BotAction currentAction;
     private volatile ActionResult lastResult;
     private final AtomicBoolean executing = new AtomicBoolean(false);
+
+    // Collects results from all actions in a batch so Claude can see what worked/failed
+    private final CopyOnWriteArrayList<ExecutedAction> recentResults = new CopyOnWriteArrayList<>();
+
+    /**
+     * An executed action paired with its result, for feedback to Claude.
+     */
+    public static class ExecutedAction
+    {
+        public final BotAction action;
+        public final ActionResult result;
+
+        public ExecutedAction(BotAction action, ActionResult result)
+        {
+            this.action = action;
+            this.result = result;
+        }
+
+        public String describe()
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.append(action.getType().name());
+            sb.append("(");
+            boolean hasParam = false;
+            if (action.getName() != null)
+            {
+                sb.append("name=").append(action.getName());
+                hasParam = true;
+            }
+            if (action.getOption() != null)
+            {
+                if (hasParam) sb.append(",");
+                sb.append("option=").append(action.getOption());
+                hasParam = true;
+            }
+            if (action.getX() != 0 || action.getY() != 0)
+            {
+                if (hasParam) sb.append(",");
+                sb.append("x=").append(action.getX()).append(",y=").append(action.getY());
+            }
+            sb.append(")");
+            sb.append(" -> ");
+            sb.append(result.isSuccess() ? "OK" : "FAILED: " + result.getMessage());
+            return sb.toString();
+        }
+    }
 
     /**
      * Ensures the executor is running. Called on first tick or after a plugin toggle.
@@ -103,6 +152,7 @@ public class ActionExecutor
                 System.out.println("[ClaudeBot] Executing action: " + action.getType() +
                     " name=" + action.getName() + " option=" + action.getOption());
                 lastResult = executeAction(action);
+                recentResults.add(new ExecutedAction(action, lastResult));
                 System.out.println("[ClaudeBot] Action " + action.getType() + ": " +
                     (lastResult.isSuccess() ? "OK" : "FAIL - " + lastResult.getMessage()));
 
@@ -117,6 +167,7 @@ public class ActionExecutor
                 t.printStackTrace(System.err);
                 lastResult = ActionResult.failure(action.getType(),
                     t.getClass().getSimpleName() + ": " + t.getMessage());
+                recentResults.add(new ExecutedAction(action, lastResult));
             }
             finally
             {
@@ -173,7 +224,7 @@ public class ActionExecutor
             case CLICK_WIDGET:
                 return ClickWidgetAction.execute(humanSimulator, action);
             case CAST_SPELL:
-                return CastSpellAction.execute(client, humanSimulator, npcUtils, clientThread, action);
+                return CastSpellAction.execute(client, humanSimulator, npcUtils, itemUtils, clientThread, action);
             case MAKE_ITEM:
                 return MakeItemAction.execute(client, humanSimulator, itemManager, clientThread, action);
             case SHOP_BUY:
@@ -188,9 +239,36 @@ public class ActionExecutor
                 return GeBuyAction.execute(client, humanSimulator, clientThread, action);
             case GE_SELL:
                 return GeSellAction.execute(client, humanSimulator, itemManager, clientThread, action);
+            case OPEN_TAB:
+                return OpenTabAction.execute(client, humanSimulator, clientThread, action);
+            case TYPE_TEXT:
+                return TypeTextAction.execute(humanSimulator, action);
+            case UNEQUIP_ITEM:
+                return UnequipItemAction.execute(client, humanSimulator, itemManager, clientThread, action);
+            case PRESS_KEY:
+                return PressKeyAction.execute(humanSimulator, action);
+            case BANK_DEPOSIT_ALL:
+                return BankDepositAllAction.execute(client, humanSimulator, clientThread);
+            case SET_ATTACK_STYLE:
+                return SetAttackStyleAction.execute(client, humanSimulator, clientThread, action);
+            case SET_AUTOCAST:
+                return SetAutocastAction.execute(client, humanSimulator, clientThread, action);
+            case WORLD_HOP:
+                return WorldHopAction.execute(client, humanSimulator, clientThread, action);
             default:
                 return ActionResult.failure(action.getType(), "Unimplemented action type");
         }
+    }
+
+    /**
+     * Returns all action results collected since the last call, then clears the list.
+     * Called by ClaudeBotPlugin before sending the next query to Claude.
+     */
+    public List<ExecutedAction> getAndClearResults()
+    {
+        List<ExecutedAction> snapshot = new ArrayList<>(recentResults);
+        recentResults.clear();
+        return snapshot;
     }
 
     public BotAction getCurrentAction()
@@ -220,5 +298,9 @@ public class ActionExecutor
         {
             executor.shutdownNow();
         }
+        executor = null;
+        currentAction = null;
+        executing.set(false);
+        recentResults.clear();
     }
 }

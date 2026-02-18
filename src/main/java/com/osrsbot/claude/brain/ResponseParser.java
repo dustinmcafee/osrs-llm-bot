@@ -21,13 +21,7 @@ public class ResponseParser
 
         try
         {
-            // Strip any markdown code fences that Claude might add despite instructions
-            String cleaned = response.trim();
-            if (cleaned.startsWith("```"))
-            {
-                cleaned = cleaned.replaceAll("```[a-z]*\\n?", "").replace("```", "").trim();
-            }
-
+            String cleaned = extractJsonArray(response);
             JsonArray array = JsonParser.parseString(cleaned).getAsJsonArray();
 
             for (JsonElement element : array)
@@ -54,6 +48,7 @@ public class ResponseParser
                     if (obj.has("item2")) action.setItem2(obj.get("item2").getAsString());
                     if (obj.has("npc")) action.setNpc(obj.get("npc").getAsString());
                     if (obj.has("object")) action.setObject(obj.get("object").getAsString());
+                    if (obj.has("text")) action.setText(obj.get("text").getAsString());
 
                     actions.add(action);
                 }
@@ -65,8 +60,8 @@ public class ResponseParser
         }
         catch (Throwable e)
         {
-            System.err.println("[ClaudeBot] Failed to parse Claude response: " + e.getClass().getName() + ": " + e.getMessage());
-            e.printStackTrace(System.err);
+            System.err.println("[ClaudeBot] Failed to parse Claude response: " + e.getMessage());
+            System.err.println("[ClaudeBot] Raw response was: " + response);
             // Return a wait action on parse failure
             BotAction wait = new BotAction();
             wait.setType(ActionType.WAIT);
@@ -75,5 +70,62 @@ public class ResponseParser
         }
 
         return actions;
+    }
+
+    /**
+     * Extracts reasoning text from Claude's response (everything before the JSON array).
+     * Returns null if there's no reasoning text.
+     */
+    public String extractReasoning(String response)
+    {
+        if (response == null) return null;
+        String trimmed = response.trim();
+
+        // Strip code fences first
+        String cleaned = trimmed;
+        if (cleaned.contains("```"))
+        {
+            cleaned = cleaned.replaceAll("```[a-zA-Z]*\\s*", "").replace("```", "").trim();
+        }
+
+        int arrayStart = cleaned.indexOf('[');
+        if (arrayStart <= 0) return null;
+
+        String reasoning = cleaned.substring(0, arrayStart).trim();
+        return reasoning.isEmpty() ? null : reasoning;
+    }
+
+    /**
+     * Extracts a JSON array from Claude's response, handling common formatting issues:
+     * - Markdown code fences (```json ... ```)
+     * - Text before/after the JSON array ("Here are the actions: [...]")
+     * - Whitespace and newlines
+     */
+    private String extractJsonArray(String response)
+    {
+        String cleaned = response.trim();
+
+        // Strip markdown code fences
+        if (cleaned.contains("```"))
+        {
+            cleaned = cleaned.replaceAll("```[a-zA-Z]*\\s*", "").replace("```", "").trim();
+        }
+
+        // If it already starts with '[', use it directly
+        if (cleaned.startsWith("["))
+        {
+            return cleaned;
+        }
+
+        // Find the JSON array within surrounding text
+        int start = cleaned.indexOf('[');
+        int end = cleaned.lastIndexOf(']');
+        if (start >= 0 && end > start)
+        {
+            return cleaned.substring(start, end + 1);
+        }
+
+        // Nothing found — return as-is and let the parser throw a descriptive error
+        return cleaned;
     }
 }

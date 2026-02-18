@@ -23,12 +23,18 @@ public class PlayerState
     private boolean isMoving;
     private boolean isInCombat;
     private boolean isIdle;
-    // Skills
+    // Skills (base levels)
     private int attackLevel;
     private int strengthLevel;
     private int defenceLevel;
     private int rangedLevel;
     private int magicLevel;
+    // Boosted combat levels (includes potion boosts and stat drains)
+    private int boostedAttack;
+    private int boostedStrength;
+    private int boostedDefence;
+    private int boostedRanged;
+    private int boostedMagic;
     private int hitpointsLevel;
     private int prayerLevel;
     private int woodcuttingLevel;

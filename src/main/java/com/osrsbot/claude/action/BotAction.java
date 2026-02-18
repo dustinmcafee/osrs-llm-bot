@@ -23,4 +23,7 @@ public class BotAction
     private String item2;
     private String npc;
     private String object;
+
+    // Text input
+    private String text;
 }

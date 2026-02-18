@@ -85,11 +85,12 @@ public class PickupItemAction
         java.awt.Point screenPoint = (java.awt.Point) lookupData[3];
 
         // Phase 2: Mouse movement on background thread (with sleeps for humanization)
-        if (screenPoint != null)
+        if (screenPoint == null)
         {
-            human.moveMouse(screenPoint.x, screenPoint.y);
-            human.shortPause();
+            return ActionResult.failure(ActionType.PICKUP_ITEM, "Ground item not visible on screen: " + action.getName());
         }
+        human.moveMouse(screenPoint.x, screenPoint.y);
+        human.shortPause();
 
         // Phase 3: Menu action on client thread (fire-and-forget)
         String itemName = action.getName();

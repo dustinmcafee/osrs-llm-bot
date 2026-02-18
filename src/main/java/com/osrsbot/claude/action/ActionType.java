@@ -30,5 +30,13 @@ public enum ActionType
     MINIMAP_WALK,
     ROTATE_CAMERA,
     GE_BUY,
-    GE_SELL
+    GE_SELL,
+    OPEN_TAB,
+    TYPE_TEXT,
+    UNEQUIP_ITEM,
+    PRESS_KEY,
+    BANK_DEPOSIT_ALL,
+    SET_ATTACK_STYLE,
+    SET_AUTOCAST,
+    WORLD_HOP
 }

@@ -115,16 +115,30 @@ public interface ClaudeBotConfig extends Config
         return 5;
     }
 
+    @Range(min = 1, max = 10)
     @ConfigItem(
         keyName = "contextWindowSize",
-        name = "Context Window",
-        description = "Number of conversation exchanges to keep",
+        name = "Recent Exchanges",
+        description = "Number of full conversation exchanges to keep (working memory)",
         section = behaviorSection,
         position = 3
     )
     default int contextWindowSize()
     {
-        return 10;
+        return 3;
+    }
+
+    @Range(min = 4000, max = 128000)
+    @ConfigItem(
+        keyName = "memoryBudget",
+        name = "Memory Budget (chars)",
+        description = "Max characters for compressed session notes (~4 chars = 1 token). 32000 = ~30-60 min of history.",
+        section = behaviorSection,
+        position = 4
+    )
+    default int memoryBudget()
+    {
+        return 32000;
     }
 
     @ConfigItem(
@@ -132,11 +146,11 @@ public interface ClaudeBotConfig extends Config
         name = "Entity Scan Radius",
         description = "Tile radius to scan for nearby entities",
         section = behaviorSection,
-        position = 4
+        position = 5
     )
     default int nearbyEntityRadius()
     {
-        return 15;
+        return 25;
     }
 
     // --- Humanization ---

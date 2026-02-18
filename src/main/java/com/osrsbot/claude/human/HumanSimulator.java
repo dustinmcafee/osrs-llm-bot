@@ -114,6 +114,18 @@ public class HumanSimulator
         mouseController.pressKey(keyCode);
     }
 
+    public void keyDown(int keyCode)
+    {
+        if (!initialized) return;
+        mouseController.keyDown(keyCode);
+    }
+
+    public void keyUp(int keyCode)
+    {
+        if (!initialized) return;
+        mouseController.keyUp(keyCode);
+    }
+
     /**
      * Holds a key down for a duration then releases — simulates a human
      * holding an arrow key to rotate the camera.

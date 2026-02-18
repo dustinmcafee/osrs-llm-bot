@@ -158,6 +158,31 @@ public class MouseController
     }
 
     /**
+     * Dispatches only KEY_PRESSED for a modifier key (Shift, Ctrl, Alt).
+     * Must be paired with keyUp() to release the key.
+     */
+    public void keyDown(int keyCode)
+    {
+        if (canvas == null) return;
+        postEvent(new java.awt.event.KeyEvent(
+            canvas, java.awt.event.KeyEvent.KEY_PRESSED, System.currentTimeMillis(), 0,
+            keyCode, java.awt.event.KeyEvent.CHAR_UNDEFINED
+        ));
+    }
+
+    /**
+     * Dispatches only KEY_RELEASED for a modifier key.
+     */
+    public void keyUp(int keyCode)
+    {
+        if (canvas == null) return;
+        postEvent(new java.awt.event.KeyEvent(
+            canvas, java.awt.event.KeyEvent.KEY_RELEASED, System.currentTimeMillis(), 0,
+            keyCode, java.awt.event.KeyEvent.CHAR_UNDEFINED
+        ));
+    }
+
+    /**
      * Holds a key down for a specified duration, then releases it.
      * Dispatches KEY_PRESSED immediately, sleeps for the duration,
      * then dispatches KEY_RELEASED — mimicking a human holding an arrow key.

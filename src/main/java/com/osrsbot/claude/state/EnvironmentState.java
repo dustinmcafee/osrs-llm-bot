@@ -48,4 +48,20 @@ public class EnvironmentState
 
     // Who/what the player is currently interacting with
     private String interactingWith;
+
+    // Current world number
+    private int currentWorld;
+
+    // Poison status: negative = immune, 0 = not poisoned, >0 = poisoned, >1000000 = venomed
+    private int poisonStatus;
+
+    // Combat attack style index (0-3)
+    private int attackStyleIndex;
+    private String attackStyleName;
+
+    // Currently active prayers
+    private List<String> activePrayers;
+
+    // NPCs currently targeting (attacking) the player
+    private List<String> attackingNpcs;
 }

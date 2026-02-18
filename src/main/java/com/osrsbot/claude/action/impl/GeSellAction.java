@@ -136,7 +136,9 @@ public class GeSellAction
                 {
                     if (child == null || child.getItemId() <= 0) continue;
 
-                    String name = itemManager.getItemComposition(child.getItemId()).getName();
+                    net.runelite.api.ItemComposition comp = itemManager.getItemComposition(child.getItemId());
+                    if (comp == null) continue;
+                    String name = comp.getName();
                     if (name != null && name.equalsIgnoreCase(itemName))
                     {
                         Rectangle bounds = child.getBounds();

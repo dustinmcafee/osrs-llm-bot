@@ -66,6 +66,18 @@ public class GameStateSerializer
             .append(" Herb:").append(p.getHerbloreLevel())
             .append(" RC:").append(p.getRunecraftingLevel())
             .append("\n");
+
+        // Show boosted levels only when they differ from base (potion boosts / stat drains)
+        StringBuilder boosts = new StringBuilder();
+        if (p.getBoostedAttack() != p.getAttackLevel()) boosts.append(" Atk:").append(p.getBoostedAttack());
+        if (p.getBoostedStrength() != p.getStrengthLevel()) boosts.append(" Str:").append(p.getBoostedStrength());
+        if (p.getBoostedDefence() != p.getDefenceLevel()) boosts.append(" Def:").append(p.getBoostedDefence());
+        if (p.getBoostedRanged() != p.getRangedLevel()) boosts.append(" Rng:").append(p.getBoostedRanged());
+        if (p.getBoostedMagic() != p.getMagicLevel()) boosts.append(" Mag:").append(p.getBoostedMagic());
+        if (boosts.length() > 0)
+        {
+            sb.append("[BOOSTED]").append(boosts).append("\n");
+        }
     }
 
     private void serializeInventory(StringBuilder sb, InventoryState inv)
@@ -111,8 +123,8 @@ public class GameStateSerializer
         if (entities == null || entities.isEmpty()) return;
 
         sb.append("[").append(label).append("] ");
-        // Limit to top 10 closest to save tokens
-        List<NearbyEntity> limited = entities.stream().limit(10).collect(Collectors.toList());
+        // Limit to top 15 closest to save tokens
+        List<NearbyEntity> limited = entities.stream().limit(15).collect(Collectors.toList());
         sb.append(limited.stream()
             .map(e -> {
                 StringBuilder entry = new StringBuilder();
@@ -139,12 +151,19 @@ public class GameStateSerializer
     {
         sb.append("[ENVIRONMENT] Region:").append(env.getRegionId())
             .append(" Plane:").append(env.getPlane())
-            .append(" Tab:").append(env.getActiveTabName());
+            .append(" World:").append(env.getCurrentWorld())
+            .append(" Tab:").append(env.getActiveTabName())
+            .append(" Style:").append(env.getAttackStyleName());
         if (env.isInInstance()) sb.append(" [INSTANCED]");
         if (env.isBankOpen()) sb.append(" [BANK_OPEN]");
         if (env.isShopOpen()) sb.append(" [SHOP_OPEN]");
         if (env.isMakeInterfaceOpen()) sb.append(" [MAKE_INTERFACE_OPEN]");
         if (env.isGrandExchangeOpen()) sb.append(" [GE_OPEN]");
+        if (env.getPoisonStatus() > 0)
+        {
+            if (env.getPoisonStatus() > 1000000) sb.append(" [VENOMED]");
+            else sb.append(" [POISONED]");
+        }
         sb.append(" Tick:").append(env.getGameTickCount());
         sb.append("\n");
 
@@ -152,6 +171,14 @@ public class GameStateSerializer
         if (env.getInteractingWith() != null)
         {
             sb.append("[INTERACTING] ").append(env.getInteractingWith()).append("\n");
+        }
+
+        // NPCs attacking the player — critical for combat awareness
+        if (env.getAttackingNpcs() != null && !env.getAttackingNpcs().isEmpty())
+        {
+            sb.append("[UNDER_ATTACK] ");
+            sb.append(String.join(", ", env.getAttackingNpcs()));
+            sb.append(" *** YOU ARE BEING ATTACKED ***\n");
         }
 
         // Hint arrow — the game's "do this next" indicator (critical for tutorials and quests)
@@ -204,6 +231,14 @@ public class GameStateSerializer
         else if (env.isDialogOpen())
         {
             sb.append("[DIALOGUE] open (use CONTINUE_DIALOGUE)\n");
+        }
+
+        // Active prayers
+        if (env.getActivePrayers() != null && !env.getActivePrayers().isEmpty())
+        {
+            sb.append("[ACTIVE_PRAYERS] ");
+            sb.append(String.join(", ", env.getActivePrayers()));
+            sb.append("\n");
         }
 
         // Recent game messages — feedback on what happened (failures, instructions, etc.)

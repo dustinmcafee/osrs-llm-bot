@@ -167,10 +167,14 @@ public class MakeItemAction
         {
             try
             {
-                String compositionName = itemManager.getItemComposition(widget.getItemId()).getName();
-                if (compositionName != null && compositionName.equalsIgnoreCase(itemName))
+                net.runelite.api.ItemComposition comp = itemManager.getItemComposition(widget.getItemId());
+                if (comp != null)
                 {
-                    return getCenter(widget);
+                    String compositionName = comp.getName();
+                    if (compositionName != null && compositionName.equalsIgnoreCase(itemName))
+                    {
+                        return getCenter(widget);
+                    }
                 }
             }
             catch (Throwable ignored) {}
