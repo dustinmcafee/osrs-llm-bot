@@ -40,12 +40,24 @@ public interface ClaudeBotConfig extends Config
     // --- API Settings ---
 
     @ConfigItem(
-        keyName = "apiKey",
-        name = "API Key",
-        description = "Anthropic API key",
-        secret = true,
+        keyName = "apiBaseUrl",
+        name = "API Base URL (optional)",
+        description = "OpenAI-compatible endpoint (e.g. http://192.168.1.229:1234/v1). Leave empty for Anthropic API.",
         section = apiSection,
         position = 0
+    )
+    default String apiBaseUrl()
+    {
+        return "";
+    }
+
+    @ConfigItem(
+        keyName = "apiKey",
+        name = "API Key",
+        description = "Anthropic API key (not needed for local models)",
+        secret = true,
+        section = apiSection,
+        position = 1
     )
     default String apiKey()
     {
@@ -55,9 +67,9 @@ public interface ClaudeBotConfig extends Config
     @ConfigItem(
         keyName = "model",
         name = "Model",
-        description = "Claude model to use",
+        description = "Model name (Anthropic model ID or local model name from /v1/models)",
         section = apiSection,
-        position = 1
+        position = 2
     )
     default String model()
     {
@@ -67,9 +79,9 @@ public interface ClaudeBotConfig extends Config
     @ConfigItem(
         keyName = "maxTokens",
         name = "Max Tokens",
-        description = "Max tokens in Claude response",
+        description = "Max tokens in response",
         section = apiSection,
-        position = 2
+        position = 3
     )
     default int maxTokens()
     {

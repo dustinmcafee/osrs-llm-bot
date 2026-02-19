@@ -101,17 +101,29 @@ public class ClaudeBotPlugin extends Plugin
             System.out.println("[ClaudeBot] overlay added");
 
             // Initialize brain client
-            if (!config.apiKey().isEmpty())
+            String baseUrl = config.apiBaseUrl().trim();
+            boolean hasApiKey = !config.apiKey().isEmpty();
+            boolean hasLocalUrl = !baseUrl.isEmpty();
+
+            if (hasApiKey || hasLocalUrl)
             {
-                brainClient.initialize(config.apiKey(), config.model(), config.maxTokens());
+                brainClient.initialize(config.apiKey(), config.model(), config.maxTokens(), baseUrl);
                 brainClient.setLogApiCalls(config.logApiCalls());
                 String systemPrompt = systemPromptBuilder.build(config.task());
                 brainClient.setSystemPrompt(systemPrompt);
-                System.out.println("[ClaudeBot] brain initialized with model: " + config.model());
+                if (hasLocalUrl)
+                {
+                    System.out.println("[ClaudeBot] brain initialized with LOCAL model: "
+                        + config.model() + " at " + baseUrl);
+                }
+                else
+                {
+                    System.out.println("[ClaudeBot] brain initialized with model: " + config.model());
+                }
             }
             else
             {
-                System.out.println("[ClaudeBot] WARNING: No API key configured");
+                System.out.println("[ClaudeBot] WARNING: No API key or local URL configured");
             }
 
             // Initialize conversation manager
