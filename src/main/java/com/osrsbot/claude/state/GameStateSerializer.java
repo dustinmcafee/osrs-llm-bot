@@ -53,14 +53,12 @@ public class GameStateSerializer
         sb.append("[STATUS] ");
         if (p.isIdle())
         {
-            if (p.getStuckTicks() >= 4)
+            boolean hasDestination = p.getDestinationX() != 0 || p.getDestinationY() != 0;
+            if (p.getStuckTicks() >= 4 && hasDestination)
             {
                 sb.append("STUCK(").append(p.getStuckTicks()).append(" ticks)");
-                if (p.getDestinationX() != 0 || p.getDestinationY() != 0)
-                {
-                    sb.append(" intended_dest:(").append(p.getDestinationX())
-                      .append(",").append(p.getDestinationY()).append(")");
-                }
+                sb.append(" intended_dest:(").append(p.getDestinationX())
+                  .append(",").append(p.getDestinationY()).append(")");
                 sb.append(" *** PATH BLOCKED — use PATH_TO or open nearby doors/gates ***");
             }
             else

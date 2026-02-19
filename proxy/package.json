@@ -1,0 +1,10 @@
+{
+  "name": "osrs-claude-proxy",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "OpenAI-compatible proxy that routes OSRS bot API calls through Claude Code CLI",
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

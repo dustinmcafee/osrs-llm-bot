@@ -32,6 +32,13 @@ public class BankWithdrawAction
 
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
+        // Resolve item name: Claude may send it as "item" or "name"
+        String itemName = action.getItem() != null ? action.getItem() : action.getName();
+        if (itemName == null)
+        {
+            return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: no item name specified");
+        }
+
         // Phase 1: Check bank is open, count inventory, try direct item lookup first
         Object[] lookupData;
         try
@@ -43,13 +50,13 @@ public class BankWithdrawAction
                 }
 
                 // Count inventory before withdrawal for verification
-                int invCount = countInInventory(client, itemUtils, action.getName());
+                int invCount = countInInventory(client, itemUtils, itemName);
 
                 // Try to find item directly in the visible bank container
                 Widget bankContainer = client.getWidget(WidgetInfo.BANK_ITEM_CONTAINER);
                 if (bankContainer != null)
                 {
-                    Widget item = itemUtils.findInWidget(bankContainer, action.getName());
+                    Widget item = itemUtils.findInWidget(bankContainer, itemName);
                     if (item != null)
                     {
                         java.awt.Rectangle bounds = item.getBounds();
@@ -87,12 +94,13 @@ public class BankWithdrawAction
         }
 
         String status = (String) lookupData[0];
-        int invCountBefore = (int) lookupData[2];
 
         if ("BANK_NOT_OPEN".equals(status))
         {
-            return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: bank not open for " + action.getName());
+            return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: bank not open for " + itemName);
         }
+
+        int invCountBefore = (int) lookupData[2];
 
         java.awt.Point itemPoint;
 
@@ -107,7 +115,7 @@ public class BankWithdrawAction
             java.awt.Point searchBtnPoint = (java.awt.Point) lookupData[1];
             if (searchBtnPoint == null)
             {
-                return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: " + status + " for " + action.getName());
+                return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: " + status + " for " + itemName);
             }
 
             // Click the search button
@@ -115,16 +123,16 @@ public class BankWithdrawAction
             human.shortPause(); // wait for chatbox input to appear
 
             // Type the item name
-            human.typeText(action.getName());
+            human.typeText(itemName);
 
             // Wait for the bank to filter and then find the item
-            itemPoint = waitForSearchResult(client, clientThread, itemUtils, action.getName(), human);
+            itemPoint = waitForSearchResult(client, clientThread, itemUtils, itemName, human);
             if (itemPoint == null)
             {
                 // Press Escape to exit search mode before returning failure
                 human.pressKey(KeyEvent.VK_ESCAPE);
                 return ActionResult.failure(ActionType.BANK_WITHDRAW,
-                    "Bank withdraw: item not found after search for " + action.getName());
+                    "Bank withdraw: item not found after search for " + itemName);
             }
         }
 
@@ -134,7 +142,7 @@ public class BankWithdrawAction
         String withdrawOption = getWithdrawOption(qty);
         boolean needsTyping = isCustomQuantity(qty);
 
-        boolean selected = human.moveAndRightClickSelect(client, itemPoint.x, itemPoint.y, withdrawOption, action.getName());
+        boolean selected = human.moveAndRightClickSelect(client, itemPoint.x, itemPoint.y, withdrawOption, itemName);
         if (!selected)
         {
             return ActionResult.failure(ActionType.BANK_WITHDRAW, "Withdraw option not found: " + withdrawOption);
@@ -149,9 +157,9 @@ public class BankWithdrawAction
         }
 
         // Phase 3: Wait for the withdrawal to actually complete (item appears in inventory)
-        if (!waitForInventoryChange(client, clientThread, itemUtils, action.getName(), invCountBefore, human))
+        if (!waitForInventoryChange(client, clientThread, itemUtils, itemName, invCountBefore, human))
         {
-            System.err.println("[ClaudeBot] BankWithdraw: item may not have appeared in inventory for " + action.getName());
+            System.err.println("[ClaudeBot] BankWithdraw: item may not have appeared in inventory for " + itemName);
         }
 
         // Wait one full game tick so the bank widget refreshes before the next bank operation

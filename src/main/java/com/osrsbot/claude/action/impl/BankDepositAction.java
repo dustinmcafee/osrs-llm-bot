@@ -22,6 +22,13 @@ public class BankDepositAction
 
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
+        // Resolve item name: Claude may send it as "item" or "name"
+        String itemName = action.getItem() != null ? action.getItem() : action.getName();
+        if (itemName == null)
+        {
+            return ActionResult.failure(ActionType.BANK_DEPOSIT, "Bank deposit: no item name specified");
+        }
+
         // Phase 1: Widget lookup on client thread — count current inventory qty for verification
         Object[] lookupData;
         try
@@ -38,7 +45,7 @@ public class BankDepositAction
                     return new Object[]{ "NO_BANK_WIDGET" };
                 }
 
-                Widget item = itemUtils.findInWidget(bankInventory, action.getName());
+                Widget item = itemUtils.findInWidget(bankInventory, itemName);
                 if (item == null)
                 {
                     return new Object[]{ "ITEM_NOT_FOUND" };
@@ -51,7 +58,7 @@ public class BankDepositAction
                 }
 
                 // Count how many of this item are in inventory for verification
-                int invCount = countInInventory(client, itemUtils, action.getName());
+                int invCount = countInInventory(client, itemUtils, itemName);
 
                 return new Object[]{ "OK",
                     new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY()),
@@ -67,7 +74,7 @@ public class BankDepositAction
         String status = (String) lookupData[0];
         if (!"OK".equals(status))
         {
-            return ActionResult.failure(ActionType.BANK_DEPOSIT, "Bank deposit: " + status + " for " + action.getName());
+            return ActionResult.failure(ActionType.BANK_DEPOSIT, "Bank deposit: " + status + " for " + itemName);
         }
 
         java.awt.Point point = (java.awt.Point) lookupData[1];
@@ -79,7 +86,7 @@ public class BankDepositAction
         String depositOption = getDepositOption(qty);
         boolean needsTyping = isCustomQuantity(qty);
 
-        boolean selected = human.moveAndRightClickSelect(client, point.x, point.y, depositOption, action.getName());
+        boolean selected = human.moveAndRightClickSelect(client, point.x, point.y, depositOption, itemName);
         if (!selected)
         {
             return ActionResult.failure(ActionType.BANK_DEPOSIT, "Deposit option not found: " + depositOption);
@@ -94,9 +101,9 @@ public class BankDepositAction
         }
 
         // Phase 3: Wait for the deposit to actually complete (item leaves inventory)
-        if (!waitForInventoryDecrease(client, clientThread, itemUtils, action.getName(), invCountBefore, human))
+        if (!waitForInventoryDecrease(client, clientThread, itemUtils, itemName, invCountBefore, human))
         {
-            System.err.println("[ClaudeBot] BankDeposit: item may not have been deposited for " + action.getName());
+            System.err.println("[ClaudeBot] BankDeposit: item may not have been deposited for " + itemName);
         }
 
         // Wait one full game tick so the bank widget refreshes before the next bank operation

@@ -21,7 +21,7 @@ public class MouseController
     private final ClickProfile clickProfile;
     private final Random random = new Random();
 
-    private Canvas canvas;
+    private volatile Canvas canvas;
     private int currentX = -1;
     private int currentY = -1;
     private boolean enteredCanvas = false;

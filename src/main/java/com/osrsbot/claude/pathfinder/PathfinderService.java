@@ -99,8 +99,12 @@ public class PathfinderService
     {
         Map<SplitFlagMap.Position, byte[]> compressedRegions = new HashMap<>();
 
-        try (ZipInputStream in = new ZipInputStream(
-            PathfinderService.class.getResourceAsStream("/collision-map.zip")))
+        InputStream collisionStream = PathfinderService.class.getResourceAsStream("/collision-map.zip");
+        if (collisionStream == null)
+        {
+            throw new IllegalStateException("collision-map.zip not found in classpath");
+        }
+        try (ZipInputStream in = new ZipInputStream(collisionStream))
         {
             ZipEntry entry;
             while ((entry = in.getNextEntry()) != null)
@@ -131,9 +135,13 @@ public class PathfinderService
 
         try
         {
+            InputStream transportStream = PathfinderService.class.getResourceAsStream("/transports.txt");
+            if (transportStream == null)
+            {
+                throw new IllegalStateException("transports.txt not found in classpath");
+            }
             String text = new String(
-                SplitFlagMap.readAllBytes(
-                    PathfinderService.class.getResourceAsStream("/transports.txt")),
+                SplitFlagMap.readAllBytes(transportStream),
                 StandardCharsets.UTF_8);
 
             String currentSection = "";

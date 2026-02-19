@@ -165,12 +165,25 @@ public interface ClaudeBotConfig extends Config
         return false;
     }
 
+    @Range(min = 1, max = 50)
+    @ConfigItem(
+        keyName = "maxActionsPerBatch",
+        name = "Max Actions Per Batch",
+        description = "Max actions to execute from a single LLM response before requesting fresh game state",
+        section = behaviorSection,
+        position = 6
+    )
+    default int maxActionsPerBatch()
+    {
+        return 5;
+    }
+
     @ConfigItem(
         keyName = "nearbyEntityRadius",
         name = "Entity Scan Radius",
         description = "Tile radius to scan for nearby entities",
         section = behaviorSection,
-        position = 6
+        position = 7
     )
     default int nearbyEntityRadius()
     {

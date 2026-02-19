@@ -39,5 +39,6 @@ public enum ActionType
     SET_ATTACK_STYLE,
     SET_AUTOCAST,
     WORLD_HOP,
-    PATH_TO
+    PATH_TO,
+    WAIT_ANIMATION
 }

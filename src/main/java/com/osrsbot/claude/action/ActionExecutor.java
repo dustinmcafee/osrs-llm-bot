@@ -16,7 +16,7 @@ import javax.inject.Inject;
 import javax.inject.Singleton;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -66,7 +66,7 @@ public class ActionExecutor
     private final AtomicBoolean executing = new AtomicBoolean(false);
 
     // Collects results from all actions in a batch so Claude can see what worked/failed
-    private final CopyOnWriteArrayList<ExecutedAction> recentResults = new CopyOnWriteArrayList<>();
+    private final ConcurrentLinkedQueue<ExecutedAction> recentResults = new ConcurrentLinkedQueue<>();
 
     /**
      * An executed action paired with its result, for feedback to Claude.
@@ -266,6 +266,8 @@ public class ActionExecutor
             case PATH_TO:
                 return PathToAction.execute(client, humanSimulator, pathfinderService,
                     objectUtils, clientThread, action);
+            case WAIT_ANIMATION:
+                return WaitAnimationAction.execute(client, humanSimulator, clientThread, action);
             default:
                 return ActionResult.failure(action.getType(), "Unimplemented action type");
         }
@@ -277,9 +279,13 @@ public class ActionExecutor
      */
     public List<ExecutedAction> getAndClearResults()
     {
-        List<ExecutedAction> snapshot = new ArrayList<>(recentResults);
-        recentResults.clear();
-        return snapshot;
+        List<ExecutedAction> drained = new ArrayList<>();
+        ExecutedAction item;
+        while ((item = recentResults.poll()) != null)
+        {
+            drained.add(item);
+        }
+        return drained;
     }
 
     public BotAction getCurrentAction()

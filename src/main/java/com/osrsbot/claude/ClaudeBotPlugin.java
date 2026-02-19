@@ -85,9 +85,9 @@ public class ClaudeBotPlugin extends Plugin
     private final AtomicBoolean awaitingResponse = new AtomicBoolean(false);
     private volatile boolean active = false;
     private volatile int generation = 0;
-    private String lastSerializedState = "";
-    private String lastClaudeResponse = "";
-    private String botStatus = "Idle";
+    private volatile String lastSerializedState = "";
+    private volatile String lastClaudeResponse = "";
+    private volatile String botStatus = "Idle";
     private volatile String currentGoal = "";
 
     @Override
@@ -352,8 +352,8 @@ public class ClaudeBotPlugin extends Plugin
             System.out.println("[ClaudeBot] Game state:\n" + gameState);
         }
 
-        // Query Claude
-        if (config.apiKey().isEmpty())
+        // Query Claude (skip if no API key AND no local/proxy URL configured)
+        if (config.apiKey().isEmpty() && config.apiBaseUrl().trim().isEmpty())
         {
             botStatus = "No API key";
             return;
@@ -391,9 +391,42 @@ public class ClaudeBotPlugin extends Plugin
 
             // Parse and enqueue actions
             List<BotAction> actions = responseParser.parse(response);
+
+            // Log parsed actions in readable format
+            StringBuilder actionLog = new StringBuilder();
+            actionLog.append("[ClaudeBot] ── Actions (").append(actions.size()).append(") ──\n");
+            for (int i = 0; i < actions.size(); i++)
+            {
+                BotAction a = actions.get(i);
+                actionLog.append("  ").append(i + 1).append(". ").append(a.getType().name());
+                if (a.getName() != null) actionLog.append(" name=\"").append(a.getName()).append("\"");
+                if (a.getOption() != null) actionLog.append(" option=\"").append(a.getOption()).append("\"");
+                if (a.getX() != 0 || a.getY() != 0) actionLog.append(" x=").append(a.getX()).append(" y=").append(a.getY());
+                if (a.getTicks() != 0) actionLog.append(" ticks=").append(a.getTicks());
+                if (a.getQuantity() != 0) actionLog.append(" qty=").append(a.getQuantity());
+                if (a.getItem() != null) actionLog.append(" item=\"").append(a.getItem()).append("\"");
+                if (a.getItem1() != null) actionLog.append(" item1=\"").append(a.getItem1()).append("\"");
+                if (a.getItem2() != null) actionLog.append(" item2=\"").append(a.getItem2()).append("\"");
+                if (a.getNpc() != null) actionLog.append(" npc=\"").append(a.getNpc()).append("\"");
+                if (a.getObject() != null) actionLog.append(" object=\"").append(a.getObject()).append("\"");
+                if (a.getText() != null) actionLog.append(" text=\"").append(a.getText()).append("\"");
+                actionLog.append("\n");
+            }
+            System.out.print(actionLog);
+
+            // Enforce batch size limit — only enqueue up to maxActionsPerBatch
+            int batchLimit = config.maxActionsPerBatch();
+            int enqueued = 0;
             for (BotAction action : actions)
             {
+                if (enqueued >= batchLimit)
+                {
+                    System.out.println("[ClaudeBot] Batch limit reached (" + batchLimit +
+                        "), skipping remaining " + (actions.size() - enqueued) + " actions");
+                    break;
+                }
                 actionQueue.enqueue(action);
+                enqueued++;
             }
 
             // Update persistent goal if Claude set one
@@ -407,7 +440,7 @@ public class ClaudeBotPlugin extends Plugin
             // Add to conversation history
             conversationManager.addExchange(gameState, response);
 
-            botStatus = "Queued " + actions.size() + " actions";
+            botStatus = "Queued " + enqueued + "/" + actions.size() + " actions";
         }).exceptionally(e -> {
             awaitingResponse.set(false);
             if (!active || generation != queryGeneration)

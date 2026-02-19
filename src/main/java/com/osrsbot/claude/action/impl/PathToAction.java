@@ -22,22 +22,33 @@ import java.util.Random;
 import java.util.Set;
 
 /**
- * Autonomous pathfinding action. Walks the entire computed path in a loop,
- * handling minimap clicks, transports (doors/stairs/ladders), runtime door
- * detection, and stuck recovery. Returns only when the destination is reached,
- * the path is impossible, or a timeout is hit.
+ * Chunked pathfinding action. Each call walks a few steps toward the destination,
+ * then returns control to Claude with a progress report. Claude sees the full game
+ * state and decides: re-issue PATH_TO to continue, eat food, fight, or anything else.
  *
- * This avoids wasting API calls having Claude re-issue PATH_TO every tick cycle.
+ * Path is cached in PathfinderService, so re-issuing PATH_TO to the same destination
+ * is essentially free (no BFS recomputation).
+ *
+ * Returns immediately on: arrival, combat, no path, or after MAX_STEPS clicks.
  */
 public class PathToAction
 {
     private static final Random RANDOM = new Random();
-    private static final int MIN_WAYPOINT_DIST = 12;
-    private static final int MAX_WAYPOINT_DIST = 18;
+    private static final int MIN_WAYPOINT_DIST = 7;
+    private static final int MAX_WAYPOINT_DIST = 14;
     private static final int MINIMAP_TILE_RANGE = 17;
     private static final int ARRIVAL_DISTANCE = 2;
-    private static final int STUCK_THRESHOLD = 3;
-    private static final long MAX_DURATION_MS = 120_000; // 2 minutes
+    private static final int CANVAS_WALK_MAX_DIST = 8;
+    private static final double CANVAS_WALK_CHANCE = 0.35;
+
+    /** Number of walk clicks per call before returning to Claude */
+    private static final int MAX_STEPS = 3;
+    /** Safety timeout per call (catches stuck waits) */
+    private static final long CALL_TIMEOUT_MS = 45_000;
+
+    /** Stuck detection: graduated recovery */
+    private static final int STUCK_RECLICK = 4;
+    private static final int STUCK_REROUTE = 8;
 
     /** Actions that indicate a closed/locked door or gate we can open */
     private static final Set<String> DOOR_OPEN_ACTIONS = new HashSet<>(Arrays.asList(
@@ -83,19 +94,19 @@ public class PathToAction
         if (playerPos.distanceTo(target) <= ARRIVAL_DISTANCE)
         {
             return ActionResult.success(ActionType.PATH_TO,
-                "Already at (" + targetX + "," + targetY + ")");
+                "Arrived at (" + targetX + "," + targetY + ")");
         }
 
-        int startDistance = playerPos.distanceTo(target);
-        System.out.println("[ClaudeBot] PATH_TO: starting autonomous walk from " + playerPos
-            + " to " + target + " (" + startDistance + " tiles)");
+        System.out.println("[ClaudeBot] PATH_TO: walking from " + playerPos
+            + " to " + target + " (" + playerPos.distanceTo(target) + " tiles)");
 
-        long startTime = System.currentTimeMillis();
+        long callStart = System.currentTimeMillis();
         TimingEngine timing = human.getTimingEngine();
+        int steps = 0;
         int stuckCount = 0;
         WorldPoint lastLoopPos = null;
 
-        while (System.currentTimeMillis() - startTime < MAX_DURATION_MS)
+        while (steps < MAX_STEPS && System.currentTimeMillis() - callStart < CALL_TIMEOUT_MS)
         {
             // --- Get current position ---
             playerPos = getPlayerPosition(client, clientThread);
@@ -104,39 +115,52 @@ public class PathToAction
                 return ActionResult.failure(ActionType.PATH_TO, "Lost player position mid-walk");
             }
 
-            // Update target plane in case we changed floors via transport
             target = new WorldPoint(targetX, targetY, playerPos.getPlane());
+
+            // --- Check for combat interruption ---
+            String attacker = checkForAttacker(client, clientThread);
+            if (attacker != null)
+            {
+                int distRemaining = playerPos.distanceTo(target);
+                System.out.println("[ClaudeBot] PATH_TO: under attack by "
+                    + attacker + " at " + playerPos);
+                return ActionResult.failure(ActionType.PATH_TO,
+                    "Under attack by " + attacker + " at " + playerPos
+                    + ", " + distRemaining + " tiles from destination (" + targetX + "," + targetY + ")");
+            }
 
             // --- Check arrival ---
             if (playerPos.distanceTo(target) <= ARRIVAL_DISTANCE)
             {
                 pathfinderService.invalidate();
-                long elapsed = (System.currentTimeMillis() - startTime) / 1000;
-                System.out.println("[ClaudeBot] PATH_TO: arrived at " + target
-                    + " in " + elapsed + "s");
+                System.out.println("[ClaudeBot] PATH_TO: arrived at " + target);
                 return ActionResult.success(ActionType.PATH_TO,
-                    "Arrived at (" + targetX + "," + targetY + ") in " + elapsed + "s");
+                    "Arrived at (" + targetX + "," + targetY + ")");
             }
 
-            // --- Stuck detection ---
+            // --- Stuck detection (graduated) ---
             if (lastLoopPos != null && playerPos.distanceTo(lastLoopPos) <= 1)
             {
                 stuckCount++;
-                if (stuckCount >= STUCK_THRESHOLD)
+                if (stuckCount >= STUCK_REROUTE)
                 {
-                    System.out.println("[ClaudeBot] PATH_TO: stuck at " + playerPos
-                        + " for " + stuckCount + " iterations, blocking area ahead");
-
+                    System.out.println("[ClaudeBot] PATH_TO: stuck " + stuckCount
+                        + " iterations, blocking and rerouting");
                     int dirX = Integer.signum(target.getX() - playerPos.getX());
                     int dirY = Integer.signum(target.getY() - playerPos.getY());
                     WorldPoint blockCenter = new WorldPoint(
-                        playerPos.getX() + dirX * 3,
-                        playerPos.getY() + dirY * 3,
+                        playerPos.getX() + dirX,
+                        playerPos.getY() + dirY,
                         playerPos.getPlane());
-                    pathfinderService.blockArea(blockCenter, 2);
+                    pathfinderService.blockArea(blockCenter, 1);
                     pathfinderService.invalidate();
                     stuckCount = 0;
-                    // Continue loop to recompute path around blocked area
+                }
+                else if (stuckCount >= STUCK_RECLICK)
+                {
+                    System.out.println("[ClaudeBot] PATH_TO: stuck " + stuckCount
+                        + " iterations, re-clicking");
+                    pathfinderService.invalidate();
                 }
             }
             else
@@ -159,7 +183,6 @@ public class PathToAction
             int currentIdx = findNearestPathIndex(path, playerPos);
             if (currentIdx < 0)
             {
-                // Off the path — invalidate and retry
                 pathfinderService.invalidate();
                 timing.sleep(600);
                 continue;
@@ -173,6 +196,7 @@ public class PathToAction
             {
                 pathfinderService.invalidate();
                 waitForPlayerToStop(client, clientThread, timing, 5000);
+                steps++;
                 continue;
             }
 
@@ -188,7 +212,6 @@ public class PathToAction
 
                 if (transport != null)
                 {
-                    // Walk to transport start if not there yet
                     int distToTransport = playerPos.distanceTo(transportStart);
                     if (distToTransport > ARRIVAL_DISTANCE)
                     {
@@ -198,57 +221,68 @@ public class PathToAction
                             continue;
                         }
                         waitForPlayerToStop(client, clientThread, timing, 8000);
+                        steps++;
                         continue;
                     }
 
-                    // At the transport — interact with it
                     System.out.println("[ClaudeBot] PATH_TO: using transport "
                         + transport.action + " " + transport.target
-                        + " (remaining: " + remaining + " tiles)");
+                        + " (" + remaining + " tiles remaining)");
                     doTransportInteract(client, human, objectUtils, clientThread, transport);
                     waitForPlayerToStop(client, clientThread, timing, 5000);
+                    steps++;
                     continue;
                 }
             }
 
-            // --- Normal walk: click minimap waypoint ---
+            // --- Normal walk: canvas click for close tiles, minimap for far ---
             int waypointDist = MIN_WAYPOINT_DIST
                 + RANDOM.nextInt(MAX_WAYPOINT_DIST - MIN_WAYPOINT_DIST + 1);
             int waypointIdx = Math.min(currentIdx + waypointDist, path.size() - 1);
 
-            // Don't walk past a transport
             if (transportIdx >= 0 && waypointIdx > transportIdx)
             {
                 waypointIdx = transportIdx;
             }
 
             WorldPoint waypoint = path.get(waypointIdx);
-            System.out.println("[ClaudeBot] PATH_TO: walking toward " + waypoint
-                + " (" + remaining + " tiles remaining)");
+            int waypointTileDist = playerPos.distanceTo(waypoint);
 
-            if (!doMinimapClick(client, human, clientThread, playerPos, waypoint))
+            System.out.println("[ClaudeBot] PATH_TO: step " + (steps + 1) + "/" + MAX_STEPS
+                + " toward " + waypoint + " (" + remaining + " tiles remaining)");
+
+            boolean clicked = false;
+
+            if (waypointTileDist <= CANVAS_WALK_MAX_DIST && RANDOM.nextDouble() < CANVAS_WALK_CHANCE)
+            {
+                clicked = doCanvasClick(client, human, clientThread, waypoint);
+            }
+
+            if (!clicked)
+            {
+                clicked = doMinimapClick(client, human, clientThread, playerPos, waypoint);
+            }
+
+            if (!clicked)
             {
                 timing.sleep(600);
                 continue;
             }
 
             waitForPlayerToStop(client, clientThread, timing, 8000);
+            steps++;
         }
 
-        // Timed out
-        int remaining = playerPos != null ? playerPos.distanceTo(target) : -1;
-        long elapsed = (System.currentTimeMillis() - startTime) / 1000;
-        System.out.println("[ClaudeBot] PATH_TO: timed out after " + elapsed + "s, "
-            + remaining + " tiles remaining");
-        return ActionResult.failure(ActionType.PATH_TO,
-            "Timed out after " + elapsed + "s, " + remaining + " tiles remaining");
+        // Chunk complete — return progress so Claude can see game state and decide
+        int distRemaining = playerPos != null ? playerPos.distanceTo(target) : -1;
+        System.out.println("[ClaudeBot] PATH_TO: chunk done, " + distRemaining + " tiles remaining");
+        return ActionResult.success(ActionType.PATH_TO,
+            "Walking to (" + targetX + "," + targetY + "): "
+            + distRemaining + " tiles remaining. Re-issue PATH_TO to continue.");
     }
 
     // ───────────────────── Helpers ─────────────────────
 
-    /**
-     * Gets player position, world type, and agility level on the client thread.
-     */
     private static Object[] getClientData(Client client, ClientThread clientThread)
     {
         try
@@ -269,9 +303,6 @@ public class PathToAction
         }
     }
 
-    /**
-     * Gets player world position on client thread.
-     */
     private static WorldPoint getPlayerPosition(Client client, ClientThread clientThread)
     {
         try
@@ -287,14 +318,10 @@ public class PathToAction
         }
     }
 
-    /**
-     * Clicks on the minimap to walk toward a waypoint. Returns true if the click succeeded.
-     */
     private static boolean doMinimapClick(Client client, HumanSimulator human,
                                            ClientThread clientThread,
                                            WorldPoint playerPos, WorldPoint waypoint)
     {
-        // Clamp to minimap range
         int dx = waypoint.getX() - playerPos.getX();
         int dy = waypoint.getY() - playerPos.getY();
         double dist = Math.sqrt(dx * dx + dy * dy);
@@ -311,7 +338,6 @@ public class PathToAction
         final int finalWalkX = walkX;
         final int finalWalkY = walkY;
 
-        // Convert to minimap screen coordinates on client thread
         java.awt.Point screenPoint;
         try
         {
@@ -331,25 +357,56 @@ public class PathToAction
             return false;
         }
 
-        if (screenPoint == null)
-        {
-            return false;
-        }
+        if (screenPoint == null) return false;
 
         human.moveAndClick(screenPoint.x, screenPoint.y);
         human.shortPause();
         return true;
     }
 
-    /**
-     * Interacts with a transport object (door, staircase, ladder, etc.)
-     */
+    private static boolean doCanvasClick(Client client, HumanSimulator human,
+                                          ClientThread clientThread, WorldPoint waypoint)
+    {
+        java.awt.Point screenPoint;
+        try
+        {
+            screenPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                LocalPoint localPoint = LocalPoint.fromWorld(client, waypoint);
+                if (localPoint == null) return null;
+
+                net.runelite.api.Point canvasPoint = Perspective.localToCanvas(
+                    client, localPoint, client.getPlane());
+                if (canvasPoint == null) return null;
+
+                int cx = canvasPoint.getX();
+                int cy = canvasPoint.getY();
+                if (cx < 5 || cy < 5
+                    || cx >= client.getCanvasWidth() - 5
+                    || cy >= client.getCanvasHeight() - 5)
+                {
+                    return null;
+                }
+
+                return new java.awt.Point(cx, cy);
+            });
+        }
+        catch (Throwable t)
+        {
+            return false;
+        }
+
+        if (screenPoint == null) return false;
+
+        human.moveAndClick(screenPoint.x, screenPoint.y);
+        human.shortPause();
+        return true;
+    }
+
     private static void doTransportInteract(Client client, HumanSimulator human,
                                              ObjectUtils objectUtils,
                                              ClientThread clientThread,
                                              Transport transport)
     {
-        // Phase 1: Find the object and get screen position
         Object[] lookupData;
         try
         {
@@ -399,14 +456,12 @@ public class PathToAction
         String action = (String) lookupData[5];
         String target = (String) lookupData[6];
 
-        // Phase 2: Move mouse to object
         if (screenPoint != null)
         {
             human.moveMouse(screenPoint.x, screenPoint.y);
             human.shortPause();
         }
 
-        // Phase 3: Interact via menu entries
         final int fSceneX = sceneX;
         final int fSceneY = sceneY;
         final int fObjId = objId;
@@ -453,10 +508,6 @@ public class PathToAction
         human.shortPause();
     }
 
-    /**
-     * Checks for a closed door/gate within 1 tile of the player in the given direction.
-     * If found, opens it and walks through. Returns true if a door was handled.
-     */
     private static boolean tryOpenBlockingDoor(Client client, HumanSimulator human,
                                                 ObjectUtils objectUtils,
                                                 ClientThread clientThread,
@@ -466,7 +517,6 @@ public class PathToAction
         int dirY = Integer.signum(toward.getY() - playerPos.getY());
         if (dirX == 0 && dirY == 0) return false;
 
-        // Phase 1: Find a nearby closed door on client thread
         Object[] doorData;
         try
         {
@@ -529,16 +579,14 @@ public class PathToAction
         int doorDx = (int) doorData[3];
         int doorDy = (int) doorData[4];
 
-        System.out.println("[ClaudeBot] PATH_TO: opening blocking " + name + " (" + action + ")");
+        System.out.println("[ClaudeBot] PATH_TO: opening " + name + " (" + action + ")");
 
-        // Phase 2: Move mouse to door
         if (screenPoint != null)
         {
             human.moveMouse(screenPoint.x, screenPoint.y);
             human.shortPause();
         }
 
-        // Phase 3: Fire the Open action via menu entries
         final String fAction = action;
         final String fName = name;
         clientThread.invokeLater(() -> {
@@ -576,7 +624,6 @@ public class PathToAction
             }
         });
 
-        // Wait for door to open, then walk through
         human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
 
         int throughX = playerPos.getX() + doorDx * 2;
@@ -587,10 +634,6 @@ public class PathToAction
         return true;
     }
 
-    /**
-     * Checks if a tile object is a door/gate with an "Open" action.
-     * Returns [screenPoint, action, name, dx, dy] if it is, null otherwise.
-     */
     private static Object[] checkDoorObject(Client client, TileObject obj, int dx, int dy)
     {
         ObjectComposition comp = client.getObjectDefinition(obj.getId());
@@ -631,16 +674,10 @@ public class PathToAction
         return new Object[]{ screenPoint, openAction, name, dx, dy };
     }
 
-    /**
-     * Waits for the player to stop moving by polling position every 600ms.
-     * Returns the final position, or null if position couldn't be read.
-     */
     private static WorldPoint waitForPlayerToStop(Client client, ClientThread clientThread,
                                                    TimingEngine timing, int maxWaitMs)
     {
         long deadline = System.currentTimeMillis() + maxWaitMs;
-
-        // Initial delay to let movement begin
         timing.sleep(1200);
 
         WorldPoint lastPos = null;
@@ -654,11 +691,7 @@ public class PathToAction
             if (lastPos != null && currentPos.equals(lastPos))
             {
                 sameCount++;
-                if (sameCount >= 2)
-                {
-                    // Player has been on the same tile for 2 consecutive polls = stopped
-                    return currentPos;
-                }
+                if (sameCount >= 2) return currentPos;
             }
             else
             {
@@ -672,9 +705,6 @@ public class PathToAction
         return lastPos;
     }
 
-    /**
-     * Find the index of the path point nearest to the player's current position.
-     */
     private static int findNearestPathIndex(List<WorldPoint> path, WorldPoint pos)
     {
         int bestIdx = -1;
@@ -690,18 +720,46 @@ public class PathToAction
             }
         }
 
-        // If more than 15 tiles from the nearest path point, consider off-path
-        if (bestDist > 15)
-        {
-            return -1;
-        }
-
+        if (bestDist > 15) return -1;
         return bestIdx;
     }
 
-    /**
-     * Scan ahead from currentIdx to find the next transport step in the path.
-     */
+    private static String checkForAttacker(Client client, ClientThread clientThread)
+    {
+        try
+        {
+            return ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Player local = client.getLocalPlayer();
+                if (local == null) return null;
+
+                for (NPC npc : client.getNpcs())
+                {
+                    if (npc != null && npc.getInteracting() == local
+                        && npc.getCombatLevel() > 0)
+                    {
+                        return npc.getName() + " (lvl " + npc.getCombatLevel() + ")";
+                    }
+                }
+
+                for (Player player : client.getPlayers())
+                {
+                    if (player != null && player != local
+                        && player.getInteracting() == local)
+                    {
+                        return "Player: " + player.getName()
+                            + " (combat " + player.getCombatLevel() + ")";
+                    }
+                }
+
+                return null;
+            });
+        }
+        catch (Throwable t)
+        {
+            return null;
+        }
+    }
+
     private static int findNextTransport(List<WorldPoint> path, int currentIdx,
                                           PathfinderService pathfinderService,
                                           boolean membersWorld)

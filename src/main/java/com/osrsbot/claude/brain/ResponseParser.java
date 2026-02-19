@@ -79,6 +79,8 @@ public class ResponseParser
         alias("GO_TO", ActionType.PATH_TO, null);
         alias("NAVIGATE", ActionType.PATH_TO, null);
         alias("TRAVEL", ActionType.PATH_TO, null);
+        alias("WAIT_ANIM", ActionType.WAIT_ANIMATION, null);
+        alias("WAIT_FOR_ANIMATION", ActionType.WAIT_ANIMATION, null);
     }
 
     private static void alias(String name, ActionType type, String defaultOption)
@@ -269,15 +271,18 @@ public class ResponseParser
      * Fixes common JSON malformations produced by local LLMs:
      * - Stray trailing quotes on numbers: "y":3305" → "y":3305
      * - Trailing commas before } or ]: [1,2,] → [1,2]
-     * - Single quotes used as delimiters: {'a':'b'} → {"a":"b"}
-     * - Unquoted string values that should be quoted
+     * - Single quotes used as JSON delimiters: {'a':'b'} → {"a":"b"}
+     * - Missing commas between objects: }{ → },{
      */
     private String sanitizeJson(String json)
     {
         // Fix stray trailing quote after bare numbers: "y":3305" → "y":3305
-        // Pattern: digit followed by " followed by , or } or ]
-        // Must NOT match valid "y":"3305" (number-as-string — has opening quote)
-        json = json.replaceAll("(:\\s*-?\\d+)\"(\\s*[,}\\]])", "$1$2");
+        // Requires ":<spaces> before digits (the closing quote of the JSON key + colon).
+        // This prevents matching inside string values like "text":"coords: 3305"
+        // because the colon there is NOT preceded by a double-quote.
+        // ":<digits>" (valid string value) also won't match because the opening quote
+        // between : and digits means -?\d+ can't start there.
+        json = json.replaceAll("(\":\\s*)(-?\\d+)\"(\\s*[,}\\]])", "$1$2$3");
 
         // Fix stray trailing quote after true/false/null: "flag":true" → "flag":true
         json = json.replaceAll("(:\\s*(?:true|false|null))\"(\\s*[,}\\]])", "$1$2");
@@ -287,6 +292,13 @@ public class ResponseParser
 
         // Fix missing comma between objects: }{  → },{
         json = json.replaceAll("}\\s*\\{", "},{");
+
+        // Fix single-quoted JSON: {'action':'WAIT'} → {"action":"WAIT"}
+        // Only applied if there are no double quotes at all (pure single-quote JSON from Python-style LLMs)
+        if (!json.contains("\"") && json.contains("'"))
+        {
+            json = json.replace('\'', '"');
+        }
 
         return json;
     }

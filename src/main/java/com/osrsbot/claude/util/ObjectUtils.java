@@ -153,6 +153,7 @@ public class ObjectUtils
         }
 
         String[] actions = comp.getActions();
+        if (actions == null) return -1;
         for (int i = 0; i < actions.length; i++)
         {
             if (actions[i] != null && actions[i].equalsIgnoreCase(option))

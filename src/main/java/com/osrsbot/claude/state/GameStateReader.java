@@ -238,17 +238,21 @@ public class GameStateReader
         }
         else
         {
-            // Position unchanged — check if truly idle
+            // Position unchanged — check if truly stuck (trying to walk but can't)
             boolean isAnimating = local.getAnimation() != AnimationID.IDLE;
             boolean inCombat = combatCountdown > 0;
+            boolean hasWalkTarget = destLocal != null
+                || lastDestinationX != 0 || lastDestinationY != 0;
 
-            if (!isAnimating && !inCombat)
+            if (!isAnimating && !inCombat && hasWalkTarget)
             {
+                // Player was trying to reach a destination but isn't moving
                 stuckTicks++;
             }
             else
             {
                 // Stationary but doing something useful (mining, combat, etc.)
+                // or simply idle with no walk destination — not stuck
                 stuckTicks = 0;
             }
         }

@@ -20,7 +20,7 @@ public class ClickWidgetAction
         int x = action.getX();
         int y = action.getY();
 
-        if (x < 0 || y < 0)
+        if (x <= 0 || y <= 0)
         {
             return ActionResult.failure(ActionType.CLICK_WIDGET, "Invalid coordinates: (" + x + "," + y + ")");
         }
