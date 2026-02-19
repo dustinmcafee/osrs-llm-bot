@@ -84,6 +84,69 @@ public class ClaudeBrainClient
         return CompletableFuture.supplyAsync(() -> query(conversationHistory, currentState), executor);
     }
 
+    private static final String FORMAT_CORRECTION =
+        "[FORMAT_ERROR] Your response could not be parsed.\n\n"
+        + "RULES:\n"
+        + "1. Respond with a JSON array of action objects.\n"
+        + "2. Each object MUST have an \"action\" field with one of the EXACT names below.\n"
+        + "3. Number values must be bare integers (no quotes): \"x\":3208 NOT \"x\":\"3208\"\n"
+        + "4. String values must be quoted: \"name\":\"Oak tree\"\n"
+        + "5. Set a \"goal\" on the FIRST action to describe your plan.\n\n"
+        + "ALL VALID ACTIONS AND THEIR PARAMETERS:\n\n"
+        + "Movement:\n"
+        + "  {\"action\":\"PATH_TO\",\"x\":3208,\"y\":3220} — walk to coordinates (handles doors/stairs)\n"
+        + "  {\"action\":\"WALK_TO\",\"x\":3208,\"y\":3220} — click-to-walk (short distances only)\n"
+        + "  {\"action\":\"MINIMAP_WALK\",\"x\":3208,\"y\":3220} — click minimap\n\n"
+        + "Objects & NPCs:\n"
+        + "  {\"action\":\"INTERACT_OBJECT\",\"name\":\"Oak tree\",\"option\":\"Chop down\"}\n"
+        + "  {\"action\":\"INTERACT_NPC\",\"name\":\"Banker\",\"option\":\"Bank\"}\n\n"
+        + "Items:\n"
+        + "  {\"action\":\"USE_ITEM\",\"name\":\"Bones\",\"option\":\"Bury\"}\n"
+        + "  {\"action\":\"DROP_ITEM\",\"name\":\"Bones\"}\n"
+        + "  {\"action\":\"PICKUP_ITEM\",\"name\":\"Bones\"}\n"
+        + "  {\"action\":\"EQUIP_ITEM\",\"name\":\"Bronze sword\"}\n"
+        + "  {\"action\":\"UNEQUIP_ITEM\",\"name\":\"Bronze sword\"}\n"
+        + "  {\"action\":\"EAT_FOOD\",\"name\":\"Shrimps\"}\n"
+        + "  {\"action\":\"USE_ITEM_ON_ITEM\",\"item1\":\"Knife\",\"item2\":\"Logs\"}\n"
+        + "  {\"action\":\"USE_ITEM_ON_NPC\",\"item\":\"Coins\",\"npc\":\"Shopkeeper\"}\n"
+        + "  {\"action\":\"USE_ITEM_ON_OBJECT\",\"item\":\"Ore\",\"object\":\"Furnace\"}\n\n"
+        + "Banking:\n"
+        + "  {\"action\":\"BANK_DEPOSIT\",\"name\":\"Oak logs\",\"quantity\":-1} — -1 for all\n"
+        + "  {\"action\":\"BANK_WITHDRAW\",\"name\":\"Tinderbox\",\"quantity\":1}\n"
+        + "  {\"action\":\"BANK_DEPOSIT_ALL\"}\n"
+        + "  {\"action\":\"BANK_CLOSE\"}\n\n"
+        + "Combat & Settings:\n"
+        + "  {\"action\":\"TOGGLE_RUN\"}\n"
+        + "  {\"action\":\"TOGGLE_PRAYER\",\"name\":\"Protect from Melee\"}\n"
+        + "  {\"action\":\"SPECIAL_ATTACK\"}\n"
+        + "  {\"action\":\"SET_ATTACK_STYLE\",\"name\":\"Accurate\"}\n"
+        + "  {\"action\":\"SET_AUTOCAST\",\"name\":\"Fire Strike\"}\n\n"
+        + "Dialogue:\n"
+        + "  {\"action\":\"SELECT_DIALOGUE\",\"option\":\"Yes\"}\n"
+        + "  {\"action\":\"CONTINUE_DIALOGUE\"}\n\n"
+        + "UI & Input:\n"
+        + "  {\"action\":\"CLICK_WIDGET\",\"name\":\"widget description\"}\n"
+        + "  {\"action\":\"OPEN_TAB\",\"name\":\"inventory\"}\n"
+        + "  {\"action\":\"TYPE_TEXT\",\"text\":\"hello\"}\n"
+        + "  {\"action\":\"PRESS_KEY\",\"name\":\"space\"}\n"
+        + "  {\"action\":\"ROTATE_CAMERA\",\"x\":0} — 0=north, 512=west, 1024=south, 1536=east\n\n"
+        + "Magic:\n"
+        + "  {\"action\":\"CAST_SPELL\",\"name\":\"High Level Alchemy\",\"item\":\"Gold bar\"}\n\n"
+        + "Shops & GE:\n"
+        + "  {\"action\":\"SHOP_BUY\",\"name\":\"Bronze pickaxe\",\"quantity\":1}\n"
+        + "  {\"action\":\"SHOP_SELL\",\"name\":\"Raw shrimps\",\"quantity\":1}\n"
+        + "  {\"action\":\"GE_BUY\",\"name\":\"Iron ore\",\"quantity\":100}\n"
+        + "  {\"action\":\"GE_SELL\",\"name\":\"Iron bar\",\"quantity\":100}\n\n"
+        + "Crafting:\n"
+        + "  {\"action\":\"MAKE_ITEM\",\"name\":\"Iron dagger\"}\n\n"
+        + "Other:\n"
+        + "  {\"action\":\"WAIT\",\"ticks\":5}\n"
+        + "  {\"action\":\"WORLD_HOP\",\"x\":301} — x is the world number\n\n"
+        + "EXAMPLE FULL RESPONSE:\n"
+        + "[{\"action\":\"INTERACT_OBJECT\",\"name\":\"Oak tree\",\"option\":\"Chop down\","
+        + "\"goal\":\"Chop oaks and bank logs\"}]\n\n"
+        + "Try again now. Output ONLY the JSON array.";
+
     private String query(List<ConversationManager.Exchange> conversationHistory, String currentState)
     {
         if (logApiCalls)
@@ -93,19 +156,29 @@ public class ClaudeBrainClient
 
         try
         {
-            String responseText;
-            if (apiBaseUrl != null && !apiBaseUrl.isEmpty())
-            {
-                responseText = queryOpenAI(conversationHistory, currentState);
-            }
-            else
-            {
-                responseText = queryAnthropic(conversationHistory, currentState);
-            }
+            String responseText = doQuery(conversationHistory, currentState);
 
             if (logApiCalls)
             {
                 logResponse(responseText);
+            }
+
+            // Validate response has correct format (JSON objects with "action" fields)
+            if (needsFormatCorrection(responseText))
+            {
+                System.out.println("[ClaudeBot] Response not in expected format, retrying with correction");
+
+                // Build retry history: original conversation + the bad exchange
+                java.util.List<ConversationManager.Exchange> retryHistory =
+                    new java.util.ArrayList<>(conversationHistory);
+                retryHistory.add(new ConversationManager.Exchange(currentState, responseText));
+
+                responseText = doQuery(retryHistory, FORMAT_CORRECTION);
+
+                if (logApiCalls)
+                {
+                    logResponse(responseText);
+                }
             }
 
             return responseText;
@@ -121,6 +194,44 @@ public class ClaudeBrainClient
                     + "╚══════════════════════════════════════════════════════════════");
             }
             return "[{\"action\":\"WAIT\",\"ticks\":5}]";
+        }
+    }
+
+    /**
+     * Checks if the response needs format correction by validating:
+     * 1. Response contains "action" (basic structural check)
+     * 2. Response contains a JSON array with at least one object
+     * 3. The JSON is parseable (no fatal structural errors that sanitizeJson won't fix)
+     */
+    private boolean needsFormatCorrection(String responseText)
+    {
+        if (responseText == null || responseText.isEmpty()) return true;
+
+        // Must contain "action" somewhere
+        if (!responseText.contains("\"action\"")) return true;
+
+        // Must contain JSON array markers
+        if (!responseText.contains("[") || !responseText.contains("]")) return true;
+
+        // Must contain at least one JSON object
+        if (!responseText.contains("{") || !responseText.contains("}")) return true;
+
+        return false;
+    }
+
+    /**
+     * Sends the actual API request to either Anthropic or OpenAI-compatible endpoint.
+     */
+    private String doQuery(List<ConversationManager.Exchange> conversationHistory, String currentState)
+        throws Exception
+    {
+        if (apiBaseUrl != null && !apiBaseUrl.isEmpty())
+        {
+            return queryOpenAI(conversationHistory, currentState);
+        }
+        else
+        {
+            return queryAnthropic(conversationHistory, currentState);
         }
     }
 

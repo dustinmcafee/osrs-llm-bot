@@ -18,15 +18,16 @@ public class Transport
     public final int objectId;        // game object ID
     public final int agilityReq;      // minimum agility level required (0 = none)
     public final boolean hasQuestReq; // requires quest/diary completion
+    public final boolean isTollGate;  // requires payment (e.g. 10gp Al Kharid gate)
     public final String requirement;  // raw requirement string (null if none)
 
     public Transport(WorldPoint start, WorldPoint end, String action, String target, int objectId)
     {
-        this(start, end, action, target, objectId, 0, false, null);
+        this(start, end, action, target, objectId, 0, false, false, null);
     }
 
     public Transport(WorldPoint start, WorldPoint end, String action, String target, int objectId,
-                     int agilityReq, boolean hasQuestReq, String requirement)
+                     int agilityReq, boolean hasQuestReq, boolean isTollGate, String requirement)
     {
         this.start = start;
         this.end = end;
@@ -35,16 +36,23 @@ public class Transport
         this.objectId = objectId;
         this.agilityReq = agilityReq;
         this.hasQuestReq = hasQuestReq;
+        this.isTollGate = isTollGate;
         this.requirement = requirement;
     }
 
     /**
-     * Check if this transport can be used by a player with the given agility level.
-     * Transports with quest/diary requirements are always skipped (can't verify completion).
+     * Check if this transport can be used given the player's world type, agility level,
+     * and toll gate preference.
+     *
+     * On F2P worlds, ALL agility shortcuts are blocked regardless of level
+     * (agility is a members skill — shortcuts are members-only interactions).
+     * On members worlds, agility shortcuts are allowed if the player meets the level.
      */
-    public boolean canUse(int playerAgilityLevel)
+    public boolean canUse(int playerAgilityLevel, boolean allowTolls, boolean membersWorld)
     {
         if (hasQuestReq) return false;
+        if (isTollGate && !allowTolls) return false;
+        if (agilityReq > 0 && !membersWorld) return false;
         if (agilityReq > 0 && playerAgilityLevel < agilityReq) return false;
         return true;
     }

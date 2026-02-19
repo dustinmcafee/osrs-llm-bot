@@ -154,11 +154,23 @@ public interface ClaudeBotConfig extends Config
     }
 
     @ConfigItem(
+        keyName = "allowTolls",
+        name = "Allow Toll Gates",
+        description = "Allow pathfinding to route through toll gates (e.g. 10gp Al Kharid gate)",
+        section = behaviorSection,
+        position = 5
+    )
+    default boolean allowTolls()
+    {
+        return false;
+    }
+
+    @ConfigItem(
         keyName = "nearbyEntityRadius",
         name = "Entity Scan Radius",
         description = "Tile radius to scan for nearby entities",
         section = behaviorSection,
-        position = 5
+        position = 6
     )
     default int nearbyEntityRadius()
     {

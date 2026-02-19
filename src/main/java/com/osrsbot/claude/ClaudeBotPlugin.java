@@ -152,7 +152,8 @@ public class ClaudeBotPlugin extends Plugin
             try
             {
                 pathfinderService.load();
-                System.out.println("[ClaudeBot] pathfinder loaded");
+                pathfinderService.setAllowTolls(config.allowTolls());
+                System.out.println("[ClaudeBot] pathfinder loaded (tolls=" + config.allowTolls() + ")");
             }
             catch (Throwable t)
             {

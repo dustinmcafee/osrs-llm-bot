@@ -72,6 +72,7 @@ public class PathfinderService
     private boolean cachedMembersWorld;
     private int cachedAgilityLevel;
     private volatile boolean loaded = false;
+    private volatile boolean allowTolls = false;
 
     /**
      * Tiles discovered at runtime to be blocked (stale collision data).
@@ -222,9 +223,17 @@ public class PathfinderService
                 hasQuestReq = hasQuestRequirement(requirement);
             }
 
+            // Detect toll gates (e.g. "Pay-toll(10gp)") and grapple shortcuts (members-only, require equipment)
+            String actionLower = action.toLowerCase();
+            boolean tollGate = actionLower.contains("toll") || actionLower.contains("pay-");
+            if (actionLower.equals("grapple"))
+            {
+                hasQuestReq = true; // Grapple shortcuts require mithril grapple + crossbow
+            }
+
             // Store transport details
             Transport transport = new Transport(start, end, action, target, objectId,
-                agilityReq, hasQuestReq, requirement);
+                agilityReq, hasQuestReq, tollGate, requirement);
 
             // Add to full transport maps (members world uses these)
             transportMap.computeIfAbsent(start, k -> new ArrayList<>()).add(end);
@@ -347,7 +356,7 @@ public class PathfinderService
 
         // Filter out transports the player can't actually use (agility, quest reqs)
         Map<WorldPoint, List<WorldPoint>> filteredTransports = filterTransports(
-            baseTransports, baseDetails, agilityLevel);
+            baseTransports, baseDetails, agilityLevel, membersWorld);
 
         // Clear runtime blocks when destination changes (fresh start for new path)
         if (cachedTarget == null || !cachedTarget.equals(to))
@@ -384,7 +393,7 @@ public class PathfinderService
     private Map<WorldPoint, List<WorldPoint>> filterTransports(
         Map<WorldPoint, List<WorldPoint>> baseTransports,
         Map<WorldPoint, List<Transport>> baseDetails,
-        int agilityLevel)
+        int agilityLevel, boolean membersWorld)
     {
         Map<WorldPoint, List<WorldPoint>> filtered = new HashMap<>();
 
@@ -404,7 +413,7 @@ public class PathfinderService
             List<WorldPoint> usableDestinations = new ArrayList<>();
             for (Transport t : transports)
             {
-                if (t.canUse(agilityLevel))
+                if (t.canUse(agilityLevel, allowTolls, membersWorld))
                 {
                     usableDestinations.add(t.end);
                 }
@@ -481,6 +490,15 @@ public class PathfinderService
     public boolean isLoaded()
     {
         return loaded;
+    }
+
+    public void setAllowTolls(boolean allowTolls)
+    {
+        if (this.allowTolls != allowTolls)
+        {
+            this.allowTolls = allowTolls;
+            invalidate(); // Recompute paths with new setting
+        }
     }
 
     /**

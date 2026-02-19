@@ -20,6 +20,15 @@ public class ActionResult
             .build();
     }
 
+    public static ActionResult success(ActionType type, String message)
+    {
+        return ActionResult.builder()
+            .success(true)
+            .actionType(type)
+            .message(message)
+            .build();
+    }
+
     public static ActionResult failure(ActionType type, String reason)
     {
         return ActionResult.builder()
