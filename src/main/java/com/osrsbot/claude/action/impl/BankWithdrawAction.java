@@ -22,13 +22,15 @@ import java.awt.event.KeyEvent;
 public class BankWithdrawAction
 {
     private static final int VERIFY_POLL_MS = 100;
-    private static final int VERIFY_TIMEOUT_MS = 1800; // 3 game ticks
-    private static final int SEARCH_FILTER_TIMEOUT_MS = 1200; // 2 game ticks for search to filter
+    private static final int VERIFY_TIMEOUT_MS = 2400; // 4 game ticks
+    private static final int SEARCH_FILTER_TIMEOUT_MS = 3000; // 5 game ticks for search to filter
+    private static final int SEARCH_CLICK_RETRIES = 2; // retry clicking search button
 
 
-    // Bank search button: group 12, child 41
+    // Bank search button background: group 12, child 36 (WidgetInfo.BANK_SEARCH_BUTTON_BACKGROUND)
+    // NOTE: child 41 is BANK_DEPOSIT_INVENTORY — DO NOT use that!
     private static final int BANK_SEARCH_GROUP = 12;
-    private static final int BANK_SEARCH_CHILD = 41;
+    private static final int BANK_SEARCH_CHILD = 36;
 
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
@@ -39,7 +41,16 @@ public class BankWithdrawAction
             return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: no item name specified");
         }
 
-        // Phase 1: Check bank is open, count inventory, try direct item lookup first
+        // Wait for bank to be open (handles batched open + withdraw)
+        if (!waitForBankOpen(client, clientThread, human))
+        {
+            return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: bank not open for " + itemName);
+        }
+
+        // Let bank UI fully render before interacting with widgets
+        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+
+        // Phase 1: Check bank is open, check inventory space, count inventory, get search button
         Object[] lookupData;
         try
         {
@@ -52,24 +63,9 @@ public class BankWithdrawAction
                 // Count inventory before withdrawal for verification
                 int invCount = countInInventory(client, itemUtils, itemName);
 
-                // Try to find item directly in the visible bank container
-                Widget bankContainer = client.getWidget(WidgetInfo.BANK_ITEM_CONTAINER);
-                if (bankContainer != null)
-                {
-                    Widget item = itemUtils.findInWidget(bankContainer, itemName);
-                    if (item != null)
-                    {
-                        java.awt.Rectangle bounds = item.getBounds();
-                        if (bounds != null)
-                        {
-                            return new Object[]{ "FOUND_DIRECT",
-                                new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY()),
-                                invCount };
-                        }
-                    }
-                }
-
-                // Item not visible — get search button bounds for search fallback
+                // Always use search — direct item lookup is unreliable because bank widget
+                // positions can shift between the lookup and the click (especially after
+                // deposit-all which re-renders the bank layout)
                 Widget searchBtn = client.getWidget(BANK_SEARCH_GROUP, BANK_SEARCH_CHILD);
                 if (searchBtn == null || searchBtn.isHidden())
                 {
@@ -102,70 +98,188 @@ public class BankWithdrawAction
 
         int invCountBefore = (int) lookupData[2];
 
-        java.awt.Point itemPoint;
-
-        if ("FOUND_DIRECT".equals(status))
+        // Always use bank search to find the item — avoids stale widget bounds
+        java.awt.Point searchBtnPoint = (java.awt.Point) lookupData[1];
+        if (searchBtnPoint == null)
         {
-            // Fast path: item is visible, use it directly
-            itemPoint = (java.awt.Point) lookupData[1];
+            return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: " + status + " for " + itemName);
         }
-        else
+
+        System.out.println("[ClaudeBot] BankWithdraw: searching for '" + itemName + "'");
+
+        // Click the search button, retry if search input doesn't activate
+        boolean searchActivated = false;
+        for (int attempt = 0; attempt < SEARCH_CLICK_RETRIES; attempt++)
         {
-            // Slow path: use bank search to find the item
-            java.awt.Point searchBtnPoint = (java.awt.Point) lookupData[1];
-            if (searchBtnPoint == null)
+            // Re-fetch search button bounds each attempt (bank may have re-rendered)
+            if (attempt > 0)
             {
-                return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: " + status + " for " + itemName);
+                System.out.println("[ClaudeBot] BankWithdraw: search retry attempt " + (attempt + 1));
+                try
+                {
+                    java.awt.Point freshBtn = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                        Widget searchBtn = client.getWidget(BANK_SEARCH_GROUP, BANK_SEARCH_CHILD);
+                        if (searchBtn == null || searchBtn.isHidden()) return null;
+                        java.awt.Rectangle b = searchBtn.getBounds();
+                        if (b == null) return null;
+                        return new java.awt.Point((int) b.getCenterX(), (int) b.getCenterY());
+                    });
+                    if (freshBtn != null) searchBtnPoint = freshBtn;
+                }
+                catch (Throwable t) {}
             }
 
-            // Click the search button
             human.moveAndClick(searchBtnPoint.x, searchBtnPoint.y);
-            human.shortPause(); // wait for chatbox input to appear
 
-            // Type the item name
-            human.typeText(itemName);
-
-            // Wait for the bank to filter and then find the item
-            itemPoint = waitForSearchResult(client, clientThread, itemUtils, itemName, human);
-            if (itemPoint == null)
+            if (waitForSearchActive(client, clientThread, human))
             {
-                // Press Escape to exit search mode before returning failure
-                human.pressKey(KeyEvent.VK_ESCAPE);
-                return ActionResult.failure(ActionType.BANK_WITHDRAW,
-                    "Bank withdraw: item not found after search for " + itemName);
+                searchActivated = true;
+                break;
             }
+            System.err.println("[ClaudeBot] BankWithdraw: search bar did not activate (attempt " + (attempt + 1) + ")");
         }
 
-        // Phase 2: Right-click select on background thread
+        if (!searchActivated)
+        {
+            // Don't press Escape — it would close the bank. Just return failure.
+            return ActionResult.failure(ActionType.BANK_WITHDRAW,
+                "Bank withdraw: search bar did not activate for " + itemName);
+        }
+
+        // Clear any stale search text from a previous search in this batch
+        // (bank search re-opens with old text still in the input)
+        for (int i = 0; i < 20; i++)
+        {
+            human.pressKey(KeyEvent.VK_BACK_SPACE);
+        }
+
+        // Type the item name
+        human.typeText(itemName);
+
+        // Wait for the bank to filter and then find the item
+        java.awt.Point itemPoint = waitForSearchResult(client, clientThread, itemUtils, itemName, human);
+        if (itemPoint == null)
+        {
+            // Click search button to toggle search off (Escape would close the bank)
+            closeSearch(client, human, clientThread);
+            return ActionResult.failure(ActionType.BANK_WITHDRAW,
+                "Bank withdraw: item not found after search for " + itemName);
+        }
+        System.out.println("[ClaudeBot] BankWithdraw: search found '" + itemName + "' at " + itemPoint);
+
+        // Let bank search results fully render before interacting
+        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+
+        // Phase 2: Set the bank quantity mode, then left-click the item.
+        // We use the bank's quantity selector buttons (widget group 12) to set the
+        // default withdraw amount, then left-click. This avoids the right-click menu
+        // entirely — client.menuAction() with CC_OP doesn't work for bank widgets,
+        // and pixel-clicking inside right-click menus is fragile.
         int qty = action.getQuantity();
         if (qty == 0) qty = 1; // Default to 1 when no quantity specified
-        String withdrawOption = getWithdrawOption(qty);
         boolean needsTyping = isCustomQuantity(qty);
 
-        boolean selected = human.moveAndRightClickSelect(client, itemPoint.x, itemPoint.y, withdrawOption, itemName);
-        if (!selected)
+        // Bank quantity button child IDs (group 12)
+        int qtyButtonChild = getQuantityButtonChild(qty);
+
+        System.out.println("[ClaudeBot] BankWithdraw: qty=" + qty + " button=child(" + qtyButtonChild + ") for '" + itemName + "'");
+
+        // Click the quantity selector button if not already set to the right mode
+        try
         {
-            return ActionResult.failure(ActionType.BANK_WITHDRAW, "Withdraw option not found: " + withdrawOption);
+            java.awt.Point qtyBtnPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Widget qtyBtn = client.getWidget(BANK_SEARCH_GROUP, qtyButtonChild);
+                if (qtyBtn == null || qtyBtn.isHidden()) return null;
+                java.awt.Rectangle bounds = qtyBtn.getBounds();
+                if (bounds == null) return null;
+                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+            });
+
+            if (qtyBtnPoint != null)
+            {
+                human.moveAndClick(qtyBtnPoint.x, qtyBtnPoint.y);
+                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+
+                // For Withdraw-X, a chatbox input dialog appears — type the quantity
+                if (needsTyping)
+                {
+                    if (!waitForSearchActive(client, clientThread, human))
+                    {
+                        System.err.println("[ClaudeBot] BankWithdraw: Withdraw-X input dialog did not appear");
+                        closeSearch(client, human, clientThread);
+                        return ActionResult.failure(ActionType.BANK_WITHDRAW,
+                            "Withdraw-X dialog did not appear for " + itemName);
+                    }
+                    human.typeText(String.valueOf(qty));
+                    human.pressKey(KeyEvent.VK_ENTER);
+                    human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+                }
+            }
+            else
+            {
+                System.err.println("[ClaudeBot] BankWithdraw: quantity button not found (child=" + qtyButtonChild + ")");
+            }
+        }
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] BankWithdraw: quantity button click failed: " + t.getMessage());
         }
 
-        // If custom quantity, type the number into the chatbox input and press Enter
-        if (needsTyping)
-        {
-            human.shortPause(); // wait for chatbox input to appear
-            human.typeText(String.valueOf(qty));
-            human.pressKey(KeyEvent.VK_ENTER);
-        }
+        // Re-find the item position (bank may have re-rendered after quantity button click)
+        java.awt.Point freshItemPoint = waitForSearchResult(client, clientThread, itemUtils, itemName, human);
+        if (freshItemPoint == null) freshItemPoint = itemPoint; // fall back to original
+
+        // Left-click the item to withdraw
+        human.moveAndClick(freshItemPoint.x, freshItemPoint.y);
+
+        // Wait one tick for the game to process the withdrawal
+        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
 
         // Phase 3: Wait for the withdrawal to actually complete (item appears in inventory)
-        if (!waitForInventoryChange(client, clientThread, itemUtils, itemName, invCountBefore, human))
+        boolean verified = waitForInventoryChange(client, clientThread, itemUtils, itemName, invCountBefore, human);
+
+        // Close search filter so the next BANK_WITHDRAW in the batch starts clean.
+        // Click the search button to toggle search off (Escape would close the bank).
+        closeSearch(client, human, clientThread);
+
+        if (!verified)
         {
-            System.err.println("[ClaudeBot] BankWithdraw: item may not have appeared in inventory for " + itemName);
+            System.err.println("[ClaudeBot] BankWithdraw: item did not appear in inventory for " + itemName);
+            return ActionResult.failure(ActionType.BANK_WITHDRAW,
+                "Withdraw clicked but " + itemName + " did not appear in inventory — wrong item may have been withdrawn");
         }
 
         // Wait one full game tick so the bank widget refreshes before the next bank operation
         human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
 
         return ActionResult.success(ActionType.BANK_WITHDRAW);
+    }
+
+    /**
+     * Safely closes the bank search filter by clicking the search button (toggles it off).
+     * Unlike Escape, this does NOT close the bank — it only toggles the search.
+     */
+    private static void closeSearch(Client client, HumanSimulator human, ClientThread clientThread)
+    {
+        try
+        {
+            java.awt.Point btn = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Widget searchBtn = client.getWidget(BANK_SEARCH_GROUP, BANK_SEARCH_CHILD);
+                if (searchBtn == null || searchBtn.isHidden()) return null;
+                java.awt.Rectangle b = searchBtn.getBounds();
+                if (b == null) return null;
+                return new java.awt.Point((int) b.getCenterX(), (int) b.getCenterY());
+            });
+            if (btn != null)
+            {
+                human.moveAndClick(btn.x, btn.y);
+                human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+            }
+        }
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] BankWithdraw: closeSearch failed: " + t.getMessage());
+        }
     }
 
     /**
@@ -188,6 +302,14 @@ public class BankWithdrawAction
 
                     Widget item = itemUtils.findInWidget(bankContainer, itemName);
                     if (item == null) return null;
+
+                    // Skip bank placeholders (quantity 0) — they show the item but can't be withdrawn
+                    if (item.getItemQuantity() <= 0)
+                    {
+                        System.out.println("[ClaudeBot] BankWithdraw: found '" + itemName
+                            + "' but it's a placeholder (qty=" + item.getItemQuantity() + "), skipping");
+                        return null;
+                    }
 
                     java.awt.Rectangle bounds = item.getBounds();
                     if (bounds == null) return null;
@@ -275,5 +397,102 @@ public class BankWithdrawAction
     private static boolean isCustomQuantity(int quantity)
     {
         return quantity != -1 && quantity != 1 && quantity != 5 && quantity != 10;
+    }
+
+    /**
+     * Maps the requested quantity to the bank's quantity selector button widget child ID.
+     * Widget group 12:
+     *   child 23 = "1"
+     *   child 25 = "5"
+     *   child 27 = "10"
+     *   child 29 = "X" (custom)
+     *   child 31 = "All"
+     */
+    private static int getQuantityButtonChild(int quantity)
+    {
+        if (quantity == 1) return 23;
+        if (quantity == 5) return 25;
+        if (quantity == 10) return 27;
+        if (quantity == -1) return 31; // All
+        return 29; // X (custom quantity — requires typing)
+    }
+
+    /**
+     * Polls until the bank interface is open, up to 1800ms (3 ticks).
+     * Handles the timing gap when open-bank and withdraw are batched together.
+     */
+    private static boolean waitForBankOpen(Client client, ClientThread clientThread, HumanSimulator human)
+    {
+        long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline)
+        {
+            try
+            {
+                boolean open = ClientThreadRunner.runOnClientThread(clientThread,
+                    () -> client.getItemContainer(InventoryID.BANK) != null);
+                if (open) return true;
+            }
+            catch (Throwable t) {}
+            human.getTimingEngine().sleep(VERIFY_POLL_MS);
+        }
+        return false;
+    }
+
+    /**
+     * Polls until the bank search input is active.
+     * Uses VarClientInt index 5 (INPUT_TYPE) which is non-zero when the chatbox
+     * is accepting text input (bank search, quantity dialogs, etc).
+     */
+    private static boolean waitForSearchActive(Client client, ClientThread clientThread, HumanSimulator human)
+    {
+        long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
+        int polls = 0;
+        while (System.currentTimeMillis() < deadline)
+        {
+            try
+            {
+                int[] result = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    // VarClientInt 5 = INPUT_TYPE: non-zero when chatbox accepts text
+                    int inputType = client.getVarcIntValue(5);
+                    if (inputType != 0) return new int[]{1, inputType};
+
+                    // Fallback: check bank search input widget (group 12, child 80 — the text input area)
+                    Widget searchInput = client.getWidget(12, 80);
+                    if (searchInput != null && !searchInput.isHidden())
+                    {
+                        return new int[]{1, -1};
+                    }
+
+                    // Fallback: scan chatbox children (group 162) for search-related text
+                    for (int child = 0; child < 50; child++)
+                    {
+                        Widget w = client.getWidget(162, child);
+                        if (w != null && !w.isHidden())
+                        {
+                            String text = w.getText();
+                            if (text != null && (text.contains("Show items") || text.contains("show items")))
+                            {
+                                return new int[]{1, -2};
+                            }
+                        }
+                    }
+                    return new int[]{0, inputType};
+                });
+                if (result[0] == 1)
+                {
+                    System.out.println("[ClaudeBot] BankWithdraw: search active (method=" + result[1] + " polls=" + polls + ")");
+                    return true;
+                }
+                if (polls == 0)
+                {
+                    System.out.println("[ClaudeBot] BankWithdraw: waiting for search activation (VarcInt5=" + result[1] + ")");
+                }
+            }
+            catch (Throwable t) {}
+            polls++;
+            human.getTimingEngine().sleep(VERIFY_POLL_MS);
+        }
+        System.err.println("[ClaudeBot] BankWithdraw: search activation timed out after " + polls + " polls");
+        return false;
     }
 }

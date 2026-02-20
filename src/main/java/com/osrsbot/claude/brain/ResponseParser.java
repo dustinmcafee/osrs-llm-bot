@@ -74,8 +74,8 @@ public class ResponseParser
         alias("WITHDRAW", ActionType.BANK_WITHDRAW, null);
         alias("WITHDRAW_ITEM", ActionType.BANK_WITHDRAW, null);
         alias("DEPOSIT_ALL", ActionType.BANK_DEPOSIT_ALL, null);
-        alias("OPEN_BANK", ActionType.INTERACT_OBJECT, "Bank");
-        alias("USE_BANK", ActionType.INTERACT_OBJECT, "Bank");
+        alias("OPEN_BANK", ActionType.INTERACT_OBJECT, "Bank", "Bank booth");
+        alias("USE_BANK", ActionType.INTERACT_OBJECT, "Bank", "Bank booth");
         alias("CLOSE_BANK", ActionType.BANK_CLOSE, null);
         alias("RUN", ActionType.TOGGLE_RUN, null);
         alias("WALK", ActionType.WALK_TO, null);
@@ -90,7 +90,12 @@ public class ResponseParser
 
     private static void alias(String name, ActionType type, String defaultOption)
     {
-        ACTION_ALIASES.put(name, new ActionAlias(type, defaultOption));
+        ACTION_ALIASES.put(name, new ActionAlias(type, defaultOption, null));
+    }
+
+    private static void alias(String name, ActionType type, String defaultOption, String defaultName)
+    {
+        ACTION_ALIASES.put(name, new ActionAlias(type, defaultOption, defaultName));
     }
 
     /**
@@ -128,47 +133,78 @@ public class ResponseParser
                 JsonObject obj = element.getAsJsonObject();
                 if (!obj.has("action")) continue;
 
-                String actionStr = obj.get("action").getAsString()
-                    .trim().toUpperCase().replaceAll("[^A-Z_0-9]", "");
+                // Resolve action type: integer ID, exact string match, or alias
+                ActionType type = null;
+                ActionAlias resolvedAlias = null;
+                JsonElement actionEl = obj.get("action");
 
-                // Skip "goal" pseudo-actions that small models produce
-                if (actionStr.equals("GOAL"))
+                // Try integer ID first (e.g. "action": 3)
+                if (actionEl.isJsonPrimitive() && actionEl.getAsJsonPrimitive().isNumber())
                 {
-                    if (obj.has("value"))
+                    type = ActionType.fromId(actionEl.getAsInt());
+                    if (type == null)
                     {
-                        lastGoal = obj.get("value").getAsString();
-                    }
-                    else if (obj.has("name"))
-                    {
-                        lastGoal = obj.get("name").getAsString();
-                    }
-                    else if (obj.has("text"))
-                    {
-                        lastGoal = obj.get("text").getAsString();
-                    }
-                    continue;
-                }
-
-                // Resolve action type (exact match or alias)
-                ActionType type;
-                String defaultOption = null;
-                try
-                {
-                    type = ActionType.valueOf(actionStr);
-                }
-                catch (IllegalArgumentException e)
-                {
-                    ActionAlias alias = ACTION_ALIASES.get(actionStr);
-                    if (alias != null)
-                    {
-                        type = alias.type;
-                        defaultOption = alias.defaultOption;
-                        System.out.println("[ClaudeBot] Mapped alias " + actionStr + " -> " + type.name());
-                    }
-                    else
-                    {
-                        System.err.println("[ClaudeBot] Unknown action type: " + actionStr);
+                        System.err.println("[ClaudeBot] Unknown action ID: " + actionEl.getAsInt());
                         continue;
+                    }
+                }
+                else
+                {
+                    String actionStr = actionEl.getAsString()
+                        .trim().toUpperCase().replaceAll("[^A-Z_0-9]", "");
+
+                    // Try parsing string as integer (e.g. "action": "3")
+                    try
+                    {
+                        int actionId = Integer.parseInt(actionStr);
+                        type = ActionType.fromId(actionId);
+                        if (type != null)
+                        {
+                            System.out.println("[ClaudeBot] Resolved action ID " + actionId + " -> " + type.name());
+                        }
+                    }
+                    catch (NumberFormatException ignored) {}
+
+                    if (type == null)
+                    {
+                        // Skip "goal" pseudo-actions that small models produce
+                        if (actionStr.equals("GOAL"))
+                        {
+                            if (obj.has("value"))
+                            {
+                                lastGoal = obj.get("value").getAsString();
+                            }
+                            else if (obj.has("name"))
+                            {
+                                lastGoal = obj.get("name").getAsString();
+                            }
+                            else if (obj.has("text"))
+                            {
+                                lastGoal = obj.get("text").getAsString();
+                            }
+                            continue;
+                        }
+
+                        // Try exact enum match
+                        try
+                        {
+                            type = ActionType.valueOf(actionStr);
+                        }
+                        catch (IllegalArgumentException e)
+                        {
+                            // Try alias map
+                            resolvedAlias = ACTION_ALIASES.get(actionStr);
+                            if (resolvedAlias != null)
+                            {
+                                type = resolvedAlias.type;
+                                System.out.println("[ClaudeBot] Mapped alias " + actionStr + " -> " + type.name());
+                            }
+                            else
+                            {
+                                System.err.println("[ClaudeBot] Unknown action type: " + actionStr);
+                                continue;
+                            }
+                        }
                     }
                 }
 
@@ -182,6 +218,7 @@ public class ResponseParser
                 if (obj.has("x")) action.setX(safeInt(obj, "x"));
                 if (obj.has("y")) action.setY(safeInt(obj, "y"));
                 if (obj.has("plane")) action.setPlane(safeInt(obj, "plane"));
+                else if (obj.has("z")) action.setPlane(safeInt(obj, "z"));
                 if (obj.has("ticks")) action.setTicks(safeInt(obj, "ticks"));
                 if (obj.has("quantity")) action.setQuantity(safeInt(obj, "quantity"));
                 if (obj.has("item")) action.setItem(safeString(obj, "item"));
@@ -191,10 +228,31 @@ public class ResponseParser
                 if (obj.has("object")) action.setObject(safeString(obj, "object"));
                 if (obj.has("text")) action.setText(safeString(obj, "text"));
 
-                // Apply default option from alias if the model didn't specify one
-                if (action.getOption() == null && defaultOption != null)
+                // Apply defaults from alias if the model didn't specify them
+                if (resolvedAlias != null)
                 {
-                    action.setOption(defaultOption);
+                    if (action.getOption() == null && resolvedAlias.defaultOption != null)
+                    {
+                        action.setOption(resolvedAlias.defaultOption);
+                    }
+                    if (action.getName() == null && resolvedAlias.defaultName != null)
+                    {
+                        action.setName(resolvedAlias.defaultName);
+                    }
+                }
+
+                // Auto-correct action type when fields don't match the parsed type.
+                // LLMs frequently confuse integer IDs (e.g. 14 for 19, 4 for 38).
+                ActionType corrected = inferCorrectType(type, action, obj);
+                if (corrected != type)
+                {
+                    String warning = "WARNING: You used action " + type.getId() + "(" + type.name()
+                        + ") but the fields indicate " + corrected.getId() + "(" + corrected.name()
+                        + "). Auto-corrected. Use " + corrected.getId() + " for " + corrected.name() + " next time.";
+                    System.out.println("[ClaudeBot] " + warning);
+                    action.setParseWarning(warning);
+                    action.setType(corrected);
+                    type = corrected;
                 }
 
                 // Extract goal from any action (not just the first)
@@ -361,15 +419,77 @@ public class ResponseParser
         }
     }
 
+    /**
+     * Detects when the LLM used the wrong integer ID but the fields clearly indicate
+     * a different action type. Returns the corrected type, or the original if no
+     * correction is needed.
+     */
+    private static ActionType inferCorrectType(ActionType parsed, BotAction action, JsonObject obj)
+    {
+        boolean hasQuantity = obj.has("quantity");
+        boolean hasItem = obj.has("item") || obj.has("name");
+        boolean hasXY = obj.has("x") && obj.has("y");
+        boolean hasOption = obj.has("option");
+        boolean hasNpc = obj.has("npc");
+        boolean hasObject = obj.has("object");
+
+        // Fields suggest BANK_WITHDRAW (19): has item/name + quantity, no x/y
+        // Common confusion: SELECT_DIALOGUE (14), CONTINUE_DIALOGUE (15)
+        if (hasItem && hasQuantity && !hasXY && !hasOption
+            && (parsed == ActionType.SELECT_DIALOGUE || parsed == ActionType.CONTINUE_DIALOGUE
+                || parsed == ActionType.WAIT))
+        {
+            return ActionType.BANK_WITHDRAW;
+        }
+
+        // BANK_CLOSE(20) with item+quantity → BANK_DEPOSIT(18).
+        // LLMs confuse BANK_CLOSE(20) with BANK_DEPOSIT(18) since they're nearby IDs.
+        // If you wanted BANK_WITHDRAW(19), you'd use 19 directly.
+        if (parsed == ActionType.BANK_CLOSE && hasItem && hasQuantity && !hasXY)
+        {
+            return ActionType.BANK_DEPOSIT;
+        }
+
+        // Fields suggest BANK_WITHDRAW (19): same pattern with other wrong IDs
+        // Only correct types that would NEVER have item+quantity together
+        if (hasItem && hasQuantity && !hasXY
+            && parsed != ActionType.BANK_WITHDRAW && parsed != ActionType.BANK_DEPOSIT
+            && parsed != ActionType.BANK_CLOSE
+            && parsed != ActionType.SHOP_BUY && parsed != ActionType.SHOP_SELL
+            && parsed != ActionType.GE_BUY && parsed != ActionType.GE_SELL
+            && parsed != ActionType.DROP_ITEM && parsed != ActionType.EAT_FOOD
+            && parsed != ActionType.EQUIP_ITEM && parsed != ActionType.UNEQUIP_ITEM
+            && parsed != ActionType.INTERACT_NPC && parsed != ActionType.INTERACT_OBJECT
+            && parsed != ActionType.USE_ITEM && parsed != ActionType.USE_ITEM_ON_ITEM
+            && parsed != ActionType.USE_ITEM_ON_NPC && parsed != ActionType.USE_ITEM_ON_OBJECT
+            && parsed != ActionType.CAST_SPELL && parsed != ActionType.MAKE_ITEM
+            && parsed != ActionType.PICKUP_ITEM)
+        {
+            return ActionType.BANK_WITHDRAW;
+        }
+
+        // Fields suggest PATH_TO (38): has x/y coordinates, no name/option
+        // Common confusion: USE_ITEM (4), WALK_TO (1) with long distances
+        if (hasXY && !hasItem && !hasOption && !hasNpc && !hasObject
+            && parsed == ActionType.USE_ITEM)
+        {
+            return ActionType.PATH_TO;
+        }
+
+        return parsed;
+    }
+
     private static class ActionAlias
     {
         final ActionType type;
         final String defaultOption;
+        final String defaultName;
 
-        ActionAlias(ActionType type, String defaultOption)
+        ActionAlias(ActionType type, String defaultOption, String defaultName)
         {
             this.type = type;
             this.defaultOption = defaultOption;
+            this.defaultName = defaultName;
         }
     }
 }

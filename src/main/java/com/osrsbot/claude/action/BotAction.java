@@ -27,4 +27,7 @@ public class BotAction
 
     // Text input
     private String text;
+
+    // Parser warning (e.g. auto-corrected action ID)
+    private String parseWarning;
 }

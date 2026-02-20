@@ -1,44 +1,74 @@
 package com.osrsbot.claude.action;
 
+import java.util.HashMap;
+import java.util.Map;
+
 public enum ActionType
 {
-    WALK_TO,
-    INTERACT_NPC,
-    INTERACT_OBJECT,
-    USE_ITEM,
-    USE_ITEM_ON_ITEM,
-    USE_ITEM_ON_NPC,
-    USE_ITEM_ON_OBJECT,
-    EQUIP_ITEM,
-    DROP_ITEM,
-    PICKUP_ITEM,
-    EAT_FOOD,
-    TOGGLE_PRAYER,
-    TOGGLE_RUN,
-    SELECT_DIALOGUE,
-    CONTINUE_DIALOGUE,
-    WAIT,
-    SPECIAL_ATTACK,
-    BANK_DEPOSIT,
-    BANK_WITHDRAW,
-    BANK_CLOSE,
-    CLICK_WIDGET,
-    CAST_SPELL,
-    MAKE_ITEM,
-    SHOP_BUY,
-    SHOP_SELL,
-    MINIMAP_WALK,
-    ROTATE_CAMERA,
-    GE_BUY,
-    GE_SELL,
-    OPEN_TAB,
-    TYPE_TEXT,
-    UNEQUIP_ITEM,
-    PRESS_KEY,
-    BANK_DEPOSIT_ALL,
-    SET_ATTACK_STYLE,
-    SET_AUTOCAST,
-    WORLD_HOP,
-    PATH_TO,
-    WAIT_ANIMATION
+    WALK_TO(1),
+    INTERACT_NPC(2),
+    INTERACT_OBJECT(3),
+    USE_ITEM(4),
+    USE_ITEM_ON_ITEM(5),
+    USE_ITEM_ON_NPC(6),
+    USE_ITEM_ON_OBJECT(7),
+    EQUIP_ITEM(8),
+    DROP_ITEM(9),
+    PICKUP_ITEM(10),
+    EAT_FOOD(11),
+    TOGGLE_PRAYER(12),
+    TOGGLE_RUN(13),
+    SELECT_DIALOGUE(14),
+    CONTINUE_DIALOGUE(15),
+    WAIT(16),
+    SPECIAL_ATTACK(17),
+    BANK_DEPOSIT(18),
+    BANK_WITHDRAW(19),
+    BANK_CLOSE(20),
+    CLICK_WIDGET(21),
+    CAST_SPELL(22),
+    MAKE_ITEM(23),
+    SHOP_BUY(24),
+    SHOP_SELL(25),
+    MINIMAP_WALK(26),
+    ROTATE_CAMERA(27),
+    GE_BUY(28),
+    GE_SELL(29),
+    OPEN_TAB(30),
+    TYPE_TEXT(31),
+    UNEQUIP_ITEM(32),
+    PRESS_KEY(33),
+    BANK_DEPOSIT_ALL(34),
+    SET_ATTACK_STYLE(35),
+    SET_AUTOCAST(36),
+    WORLD_HOP(37),
+    PATH_TO(38),
+    WAIT_ANIMATION(39);
+
+    private final int id;
+
+    private static final Map<Integer, ActionType> BY_ID = new HashMap<>();
+
+    static
+    {
+        for (ActionType t : values())
+        {
+            BY_ID.put(t.id, t);
+        }
+    }
+
+    ActionType(int id)
+    {
+        this.id = id;
+    }
+
+    public int getId()
+    {
+        return id;
+    }
+
+    public static ActionType fromId(int id)
+    {
+        return BY_ID.get(id);
+    }
 }

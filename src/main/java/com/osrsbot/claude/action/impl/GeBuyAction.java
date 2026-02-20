@@ -33,6 +33,8 @@ public class GeBuyAction
 {
     private static final int GE_GROUP_ID = 465;
     private static final int GE_SEARCH_GROUP_ID = 162; // chatbox search results
+    private static final int INPUT_POLL_MS = 100;
+    private static final int INPUT_TIMEOUT_MS = 2400; // 4 game ticks for chatbox input to appear
 
     public static ActionResult execute(Client client, HumanSimulator human,
                                        ClientThread clientThread, BotAction action)
@@ -274,6 +276,27 @@ public class GeBuyAction
     }
 
     /**
+     * Polls until VarClientInt 5 (INPUT_TYPE) is non-zero, indicating the chatbox
+     * is accepting text input (quantity/price dialogs).
+     */
+    private static boolean waitForChatboxInput(Client client, HumanSimulator human, ClientThread clientThread)
+    {
+        long deadline = System.currentTimeMillis() + INPUT_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline)
+        {
+            try
+            {
+                boolean active = ClientThreadRunner.runOnClientThread(clientThread,
+                    () -> client.getVarcIntValue(5) != 0);
+                if (active) return true;
+            }
+            catch (Throwable t) {}
+            human.getTimingEngine().sleep(INPUT_POLL_MS);
+        }
+        return false;
+    }
+
+    /**
      * Sets the quantity in the GE offer by finding and clicking the quantity input,
      * then typing the number — just like a human would.
      */
@@ -311,7 +334,11 @@ public class GeBuyAction
             if (qtyPoint != null)
             {
                 human.moveAndClick(qtyPoint.x, qtyPoint.y);
-                human.shortPause();
+                if (!waitForChatboxInput(client, human, clientThread))
+                {
+                    System.err.println("[ClaudeBot] GE buy quantity input did not appear");
+                    return;
+                }
                 human.typeText(String.valueOf(quantity));
                 human.pressKey(KeyEvent.VK_ENTER);
                 human.shortPause();
@@ -360,7 +387,11 @@ public class GeBuyAction
             if (pricePoint != null)
             {
                 human.moveAndClick(pricePoint.x, pricePoint.y);
-                human.shortPause();
+                if (!waitForChatboxInput(client, human, clientThread))
+                {
+                    System.err.println("[ClaudeBot] GE buy price input did not appear");
+                    return;
+                }
                 human.typeText(String.valueOf(price));
                 human.pressKey(KeyEvent.VK_ENTER);
                 human.shortPause();

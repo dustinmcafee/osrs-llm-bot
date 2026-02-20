@@ -2,6 +2,7 @@ package com.osrsbot.claude.human;
 
 import com.osrsbot.claude.util.ClientThreadRunner;
 import net.runelite.api.Client;
+import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.client.callback.ClientThread;
 
@@ -23,13 +24,14 @@ public class MenuInteractor
 
     /**
      * Right-clicks at the current mouse position, waits for the menu to open,
-     * finds the specified option, moves to it, and clicks.
+     * finds the specified option, moves to it visually, and invokes the action
+     * via client.menuAction() for reliability (no pixel-position dependency).
      *
      * @param client       RuneLite client (for reading menu state)
      * @param clientThread RuneLite's client thread (for thread-safe API access)
      * @param option       The menu option text (e.g., "Chop down", "Bank", "Attack")
      * @param target       Optional target name to match (e.g., "Oak tree"). Pass null to match any target.
-     * @return true if the option was found and clicked, false otherwise
+     * @return true if the option was found and invoked, false otherwise
      */
     public boolean rightClickSelect(Client client, ClientThread clientThread, String option, String target)
     {
@@ -43,23 +45,51 @@ public class MenuInteractor
             return false;
         }
 
-        // Small pause after menu opens (human reaction time)
-        human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+        // Pause after menu opens — human reaction time to "read" the menu
+        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
 
-        // Find the target entry and get its screen position (on client thread)
-        Point entryPos;
+        // Find the target entry, capture its action data and approximate screen position
+        Object[] entryData;
         try
         {
-            entryPos = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+            entryData = ClientThreadRunner.runOnClientThread(clientThread, () -> {
                 MenuEntry[] entries = client.getMenuEntries();
-                int entryIndex = findEntry(entries, option, target);
 
+                // Log all menu entries for debugging
+                System.out.println("[ClaudeBot] Menu has " + entries.length + " entries, looking for '" + option + "' / '" + target + "':");
+                for (int i = entries.length - 1; i >= 0; i--)
+                {
+                    MenuEntry e = entries[i];
+                    String eOpt = e.getOption();
+                    String eTgt = stripColorTags(e.getTarget());
+                    System.out.println("[ClaudeBot]   [" + i + "] " + eOpt + " / " + eTgt);
+                }
+
+                int entryIndex = findEntry(entries, option, target);
                 if (entryIndex == -1)
                 {
                     return null;
                 }
 
-                return getEntryScreenPosition(client, entries.length, entryIndex);
+                MenuEntry matched = entries[entryIndex];
+                Point pos = getEntryScreenPosition(client, entries.length, entryIndex);
+
+                System.out.println("[ClaudeBot] Menu: found '" + option + "' at index " + entryIndex
+                    + " type=" + matched.getType()
+                    + " id=" + matched.getIdentifier()
+                    + " p0=" + matched.getParam0()
+                    + " p1=" + matched.getParam1()
+                    + " screenPos=(" + pos.x + "," + pos.y + ")");
+
+                return new Object[]{
+                    pos,
+                    matched.getParam0(),
+                    matched.getParam1(),
+                    matched.getType(),
+                    matched.getIdentifier(),
+                    matched.getOption(),
+                    matched.getTarget()
+                };
             });
         }
         catch (Throwable t)
@@ -69,16 +99,48 @@ public class MenuInteractor
             return false;
         }
 
-        if (entryPos == null)
+        if (entryData == null)
         {
             System.err.println("[ClaudeBot] Menu option '" + option + "' not found for target '" + target + "'");
             dismissMenu(client);
             return false;
         }
 
-        // Move to entry and click (on background thread)
+        Point entryPos = (Point) entryData[0];
+        int param0 = (int) entryData[1];
+        int param1 = (int) entryData[2];
+        MenuAction menuAction = (MenuAction) entryData[3];
+        int identifier = (int) entryData[4];
+        String matchedOption = (String) entryData[5];
+        String matchedTarget = (String) entryData[6];
+
+        // Move mouse visually toward the entry (for human appearance)
         human.moveMouse(entryPos.x, entryPos.y);
-        human.click();
+        human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+
+        // Fire the action via client API — reliable, no pixel-position dependency
+        System.out.println("[ClaudeBot] Menu: invoking " + matchedOption + " via menuAction"
+            + " (type=" + menuAction + " id=" + identifier + " p0=" + param0 + " p1=" + param1 + ")");
+
+        clientThread.invokeLater(() -> {
+            try
+            {
+                client.menuAction(
+                    param0,         // param0
+                    param1,         // param1
+                    menuAction,     // type
+                    identifier,     // identifier
+                    -1,             // itemId
+                    matchedOption,  // option
+                    matchedTarget   // target
+                );
+            }
+            catch (Throwable t)
+            {
+                System.err.println("[ClaudeBot] Menu menuAction FAILED on client thread: "
+                    + t.getClass().getName() + ": " + t.getMessage());
+            }
+        });
 
         return true;
     }
@@ -140,7 +202,8 @@ public class MenuInteractor
     }
 
     /**
-     * Calculates the screen position (center of row) for a menu entry.
+     * Calculates the approximate screen position (center of row) for a menu entry.
+     * Used for visual mouse movement only — not relied upon for the actual action.
      */
     private Point getEntryScreenPosition(Client client, int totalEntries, int entryIndex)
     {

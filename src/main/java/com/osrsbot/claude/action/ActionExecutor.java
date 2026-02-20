@@ -118,6 +118,11 @@ public class ActionExecutor
             {
                 sb.append("FAILED: ").append(result.getMessage());
             }
+            // Append parse warning (e.g. auto-corrected action ID) so LLM learns
+            if (action.getParseWarning() != null)
+            {
+                sb.append(" [").append(action.getParseWarning()).append("]");
+            }
             return sb.toString();
         }
     }

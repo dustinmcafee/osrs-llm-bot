@@ -32,6 +32,8 @@ public class GeSellAction
 {
     private static final int GE_GROUP_ID = 465;
     private static final int GE_INV_GROUP_ID = 467; // GE inventory panel
+    private static final int INPUT_POLL_MS = 100;
+    private static final int INPUT_TIMEOUT_MS = 2400; // 4 game ticks for chatbox input to appear
 
     public static ActionResult execute(Client client, HumanSimulator human, ItemManager itemManager,
                                        ClientThread clientThread, BotAction action)
@@ -217,6 +219,27 @@ public class GeSellAction
         return ActionResult.success(ActionType.GE_SELL);
     }
 
+    /**
+     * Polls until VarClientInt 5 (INPUT_TYPE) is non-zero, indicating the chatbox
+     * is accepting text input (quantity dialogs).
+     */
+    private static boolean waitForChatboxInput(Client client, HumanSimulator human, ClientThread clientThread)
+    {
+        long deadline = System.currentTimeMillis() + INPUT_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline)
+        {
+            try
+            {
+                boolean active = ClientThreadRunner.runOnClientThread(clientThread,
+                    () -> client.getVarcIntValue(5) != 0);
+                if (active) return true;
+            }
+            catch (Throwable t) {}
+            human.getTimingEngine().sleep(INPUT_POLL_MS);
+        }
+        return false;
+    }
+
     private static void setQuantity(Client client, HumanSimulator human,
                                     ClientThread clientThread, int quantity)
     {
@@ -250,7 +273,11 @@ public class GeSellAction
             if (qtyPoint != null)
             {
                 human.moveAndClick(qtyPoint.x, qtyPoint.y);
-                human.shortPause();
+                if (!waitForChatboxInput(client, human, clientThread))
+                {
+                    System.err.println("[ClaudeBot] GE sell quantity input did not appear");
+                    return;
+                }
                 human.typeText(String.valueOf(quantity));
                 human.pressKey(KeyEvent.VK_ENTER);
                 human.shortPause();

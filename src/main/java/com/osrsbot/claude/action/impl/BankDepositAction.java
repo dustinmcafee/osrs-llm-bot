@@ -17,7 +17,8 @@ import java.awt.event.KeyEvent;
 public class BankDepositAction
 {
     private static final int VERIFY_POLL_MS = 100;
-    private static final int VERIFY_TIMEOUT_MS = 1800; // 3 game ticks
+    private static final int VERIFY_TIMEOUT_MS = 2400; // 4 game ticks
+    private static final int INPUT_TIMEOUT_MS = 2400; // 4 game ticks for chatbox input to appear
 
 
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
@@ -27,6 +28,12 @@ public class BankDepositAction
         if (itemName == null)
         {
             return ActionResult.failure(ActionType.BANK_DEPOSIT, "Bank deposit: no item name specified");
+        }
+
+        // Wait for bank to be open (handles batched open + deposit)
+        if (!waitForBankOpen(client, clientThread, human))
+        {
+            return ActionResult.failure(ActionType.BANK_DEPOSIT, "Bank deposit: BANK_NOT_OPEN for " + itemName);
         }
 
         // Phase 1: Widget lookup on client thread — count current inventory qty for verification
@@ -92,10 +99,15 @@ public class BankDepositAction
             return ActionResult.failure(ActionType.BANK_DEPOSIT, "Deposit option not found: " + depositOption);
         }
 
-        // If custom quantity, type the number into the chatbox input and press Enter
+        // If custom quantity, wait for chatbox input dialog then type the number
         if (needsTyping)
         {
-            human.shortPause(); // wait for chatbox input to appear
+            if (!waitForChatboxInput(client, clientThread, human))
+            {
+                System.err.println("[ClaudeBot] BankDeposit: Deposit-X input dialog did not appear for " + itemName);
+                return ActionResult.failure(ActionType.BANK_DEPOSIT,
+                    "Deposit-X dialog did not appear for " + itemName);
+            }
             human.typeText(String.valueOf(qty));
             human.pressKey(KeyEvent.VK_ENTER);
         }
@@ -104,6 +116,8 @@ public class BankDepositAction
         if (!waitForInventoryDecrease(client, clientThread, itemUtils, itemName, invCountBefore, human))
         {
             System.err.println("[ClaudeBot] BankDeposit: item may not have been deposited for " + itemName);
+            return ActionResult.failure(ActionType.BANK_DEPOSIT,
+                "Deposit clicked but " + itemName + " count did not decrease — deposit may have failed");
         }
 
         // Wait one full game tick so the bank widget refreshes before the next bank operation
@@ -180,5 +194,47 @@ public class BankDepositAction
     private static boolean isCustomQuantity(int quantity)
     {
         return quantity != -1 && quantity != 1 && quantity != 5 && quantity != 10;
+    }
+
+    /**
+     * Polls until VarClientInt 5 (INPUT_TYPE) is non-zero, indicating the chatbox
+     * is accepting text input (quantity dialogs, etc).
+     */
+    private static boolean waitForChatboxInput(Client client, ClientThread clientThread, HumanSimulator human)
+    {
+        long deadline = System.currentTimeMillis() + INPUT_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline)
+        {
+            try
+            {
+                boolean active = ClientThreadRunner.runOnClientThread(clientThread,
+                    () -> client.getVarcIntValue(5) != 0);
+                if (active) return true;
+            }
+            catch (Throwable t) {}
+            human.getTimingEngine().sleep(VERIFY_POLL_MS);
+        }
+        return false;
+    }
+
+    /**
+     * Polls until the bank interface is open, up to timeout.
+     * Handles the timing gap when open-bank and deposit are batched together.
+     */
+    private static boolean waitForBankOpen(Client client, ClientThread clientThread, HumanSimulator human)
+    {
+        long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline)
+        {
+            try
+            {
+                boolean open = ClientThreadRunner.runOnClientThread(clientThread,
+                    () -> client.getItemContainer(InventoryID.BANK) != null);
+                if (open) return true;
+            }
+            catch (Throwable t) {}
+            human.getTimingEngine().sleep(VERIFY_POLL_MS);
+        }
+        return false;
     }
 }
