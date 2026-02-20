@@ -27,6 +27,7 @@ import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.overlay.OverlayManager;
 
 import javax.inject.Inject;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -87,6 +88,7 @@ public class ClaudeBotPlugin extends Plugin
     private volatile int generation = 0;
     private volatile String lastSerializedState = "";
     private volatile String lastClaudeResponse = "";
+    private volatile List<String> lastParseErrors = new ArrayList<>();
     private volatile String botStatus = "Idle";
     private volatile String currentGoal = "";
 
@@ -314,10 +316,17 @@ public class ClaudeBotPlugin extends Plugin
         // Prepend action results from the last batch so Claude knows what worked/failed
         List<ActionExecutor.ExecutedAction> results = actionExecutor.getAndClearResults();
         List<String> gameFailures = gameStateReader.drainFailureMessages();
-        if (!results.isEmpty() || !gameFailures.isEmpty())
+        List<String> parseErrs = lastParseErrors;
+        lastParseErrors = new ArrayList<>();
+        if (!results.isEmpty() || !gameFailures.isEmpty() || !parseErrs.isEmpty())
         {
             StringBuilder resultBlock = new StringBuilder();
             resultBlock.append("[ACTION_RESULTS] Your previous actions:\n");
+            // Show parse errors first so the LLM knows its JSON was malformed
+            for (String err : parseErrs)
+            {
+                resultBlock.append("  ** ").append(err).append(" **\n");
+            }
             for (int i = 0; i < results.size(); i++)
             {
                 resultBlock.append("  ").append(i + 1).append(". ")
@@ -391,6 +400,13 @@ public class ClaudeBotPlugin extends Plugin
 
             // Parse and enqueue actions
             List<BotAction> actions = responseParser.parse(response);
+
+            // Collect parse errors — these get prepended to action results on the next query
+            lastParseErrors = responseParser.getAndClearParseErrors();
+            for (String err : lastParseErrors)
+            {
+                System.out.println("[ClaudeBot] Parse error: " + err);
+            }
 
             // Log parsed actions in readable format
             StringBuilder actionLog = new StringBuilder();

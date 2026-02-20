@@ -43,7 +43,8 @@ public enum ActionType
     SET_AUTOCAST(36),
     WORLD_HOP(37),
     PATH_TO(38),
-    WAIT_ANIMATION(39);
+    WAIT_ANIMATION(39),
+    CLEAR_ACTION_QUEUE(40);
 
     private final int id;
 

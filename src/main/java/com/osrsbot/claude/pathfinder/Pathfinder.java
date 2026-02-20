@@ -73,7 +73,9 @@ public class Pathfinder
                 return node.path();
             }
 
-            int distance = chebyshev(node.position, target);
+            // Track nearest node — strongly prefer same-plane nodes so we never
+            // route to the right (x,y) on the wrong floor when falling back
+            int distance = nearestDistance(node.position, target);
             if (nearest == null || distance < bestDistance)
             {
                 nearest = node;
@@ -145,12 +147,29 @@ public class Pathfinder
     /**
      * Chebyshev distance: exact optimal distance for 8-directional unit-cost movement.
      * Admissible and consistent, so A* with closed set is correct.
+     * Note: 2D only (ignores plane) — this is intentional for the A* heuristic
+     * since plane changes via transports have unpredictable cost.
      */
     private static int chebyshev(WorldPoint a, WorldPoint b)
     {
         return Math.max(
             Math.abs(a.getX() - b.getX()),
             Math.abs(a.getY() - b.getY()));
+    }
+
+    /**
+     * Distance metric for "nearest node" fallback tracking.
+     * Adds a large penalty for different planes so we never prefer a wrong-floor
+     * node over a same-floor one. This prevents the pathfinder from returning a
+     * path to e.g. (3212,3215,2) when targeting (3212,3215,0) — same x,y but
+     * different floor in a multi-story building.
+     */
+    private static int nearestDistance(WorldPoint a, WorldPoint b)
+    {
+        int planePenalty = (a.getPlane() != b.getPlane()) ? 10000 : 0;
+        return Math.max(
+            Math.abs(a.getX() - b.getX()),
+            Math.abs(a.getY() - b.getY())) + planePenalty;
     }
 
     private static boolean isInWilderness(WorldPoint p)

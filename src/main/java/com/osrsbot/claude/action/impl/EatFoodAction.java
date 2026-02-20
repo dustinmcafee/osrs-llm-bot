@@ -19,16 +19,41 @@ public class EatFoodAction
             return ActionResult.failure(ActionType.EAT_FOOD, "No food name specified");
         }
 
-        // Phase 1: Widget lookup on client thread
-        java.awt.Point point;
+        // Phase 1: Widget lookup + "Eat" action check on client thread
+        Object[] lookupData;
         try
         {
-            point = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+            lookupData = ClientThreadRunner.runOnClientThread(clientThread, () -> {
                 Widget item = itemUtils.findInInventory(client, action.getName());
                 if (item == null) return null;
+
+                // Check if item actually has an "Eat" or "Drink" action
+                net.runelite.api.ItemComposition comp = client.getItemDefinition(item.getItemId());
+                if (comp != null)
+                {
+                    String[] actions = comp.getInventoryActions();
+                    boolean canEat = false;
+                    if (actions != null)
+                    {
+                        for (String a : actions)
+                        {
+                            if (a != null && (a.equalsIgnoreCase("Eat") || a.equalsIgnoreCase("Drink")))
+                            {
+                                canEat = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!canEat)
+                    {
+                        // Return special marker to indicate not edible
+                        return new Object[]{ null, action.getName() };
+                    }
+                }
+
                 java.awt.Rectangle bounds = item.getBounds();
                 if (bounds == null) return null;
-                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                return new Object[]{ new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY()), null };
             });
         }
         catch (Throwable t)
@@ -37,9 +62,17 @@ public class EatFoodAction
             return ActionResult.failure(ActionType.EAT_FOOD, "Lookup failed: " + t.getMessage());
         }
 
-        if (point == null)
+        if (lookupData == null)
         {
             return ActionResult.failure(ActionType.EAT_FOOD, "Food not found: " + action.getName());
+        }
+
+        java.awt.Point point = (java.awt.Point) lookupData[0];
+        if (point == null)
+        {
+            String itemName = lookupData[1] != null ? (String) lookupData[1] : action.getName();
+            return ActionResult.failure(ActionType.EAT_FOOD,
+                itemName + " is not edible (no Eat/Drink action). You may need to cook it first.");
         }
 
         // Phase 2: Click on background thread

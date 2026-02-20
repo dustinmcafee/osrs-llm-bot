@@ -28,9 +28,11 @@ public class SystemPromptBuilder
 
         + "### Movement\n"
         + "38 PATH_TO — Walk to any coordinate, auto-handles doors/stairs/ladders/obstacles. Use for ALL travel.\n"
-        + "   Fields: x, y, plane (0=ground, 1=1st floor, 2=2nd floor)\n"
+        + "   Fields: x, y, plane (0=ground, 1=1st floor, 2=2nd floor), fleeing (optional boolean: true to flee combat)\n"
         + "   Example: {\"action\":\"PATH_TO\",\"x\":3208,\"y\":3220,\"plane\":2}\n"
-        + "   NOTE: PATH_TO is chunked — it walks ~10 tiles per call and returns progress. You MUST re-issue PATH_TO with the same destination to continue walking. Check [ACTION_RESULTS] for \"tiles remaining\".\n"
+        + "   Fleeing: {\"action\":\"PATH_TO\",\"x\":3092,\"y\":3243,\"plane\":0,\"fleeing\":true}\n"
+        + "   NOTE: PATH_TO is chunked — it walks a portion per call and returns progress. You MUST re-issue PATH_TO with the same destination to continue walking. Check [ACTION_RESULTS] for \"tiles remaining\".\n"
+        + "   FLEEING: When fleeing=true, combat interrupt checks are skipped (won't fail when attacked), run is auto-enabled, and more ground is covered per chunk.\n"
         + "1 WALK_TO — Click a visible tile. Only for very short distances (<5 tiles).\n"
         + "   Fields: x, y\n"
         + "   Example: {\"action\":\"WALK_TO\",\"x\":3200,\"y\":3200}\n"
@@ -44,6 +46,7 @@ public class SystemPromptBuilder
         + "### NPC Interaction\n"
         + "2 INTERACT_NPC — Click an NPC with a menu option. Used for: Talk-to, Attack, Bank, Trade, Pickpocket, etc.\n"
         + "   Fields: name (NPC name from [NEARBY_NPCS]), option (from the NPC's [...] action list)\n"
+        + "   IMPORTANT: Use \"name\" for the NPC name and \"option\" for the verb. Do NOT put the verb in \"action\".\n"
         + "   Example: {\"action\":\"INTERACT_NPC\",\"name\":\"Banker\",\"option\":\"Bank\"}\n"
         + "   Example: {\"action\":\"INTERACT_NPC\",\"name\":\"Goblin\",\"option\":\"Attack\"}\n"
         + "6 USE_ITEM_ON_NPC — Use an inventory item on an NPC.\n"
@@ -51,11 +54,13 @@ public class SystemPromptBuilder
         + "   Example: {\"action\":\"USE_ITEM_ON_NPC\",\"item\":\"Bones\",\"npc\":\"Banker\"}\n\n"
 
         + "### Object Interaction\n"
-        + "3 INTERACT_OBJECT — Click a game object with a menu option. Used for: Mine, Chop down, Bank, Open, Close, Climb, etc.\n"
+        + "3 INTERACT_OBJECT — Click a game object with a menu option. Used for: Mine, Chop down, Bank, Open, Close, Climb, Pick, etc.\n"
         + "   Fields: name (object name from [NEARBY_OBJECTS]), option (from the object's [...] action list)\n"
+        + "   IMPORTANT: Use \"name\" for the object name and \"option\" for the verb. Do NOT use \"object\" as a field name. Do NOT put the verb in \"action\".\n"
         + "   Example: {\"action\":\"INTERACT_OBJECT\",\"name\":\"Copper rocks\",\"option\":\"Mine\"}\n"
         + "   Example: {\"action\":\"INTERACT_OBJECT\",\"name\":\"Bank booth\",\"option\":\"Bank\"}\n"
         + "   Example: {\"action\":\"INTERACT_OBJECT\",\"name\":\"Oak tree\",\"option\":\"Chop down\"}\n"
+        + "   Example: {\"action\":\"INTERACT_OBJECT\",\"name\":\"Potato\",\"option\":\"Pick\"}\n"
         + "7 USE_ITEM_ON_OBJECT — Use an inventory item on an object.\n"
         + "   Fields: item (inventory item name), object (object name)\n"
         + "   Example: {\"action\":\"USE_ITEM_ON_OBJECT\",\"item\":\"Iron ore\",\"object\":\"Furnace\"}\n\n"
@@ -141,7 +146,9 @@ public class SystemPromptBuilder
         + "   Fields: ticks (max wait, default 20), option (optional: \"ignore_combat\" to not abort on combat)\n"
         + "   Example: {\"action\":\"WAIT_ANIMATION\",\"ticks\":20}\n"
         + "13 TOGGLE_RUN — Toggle run on/off. No fields.\n"
-        + "37 WORLD_HOP — Hop to a different world. Fields: x (world number)\n\n"
+        + "37 WORLD_HOP — Hop to a different world. Fields: x (world number)\n"
+        + "40 CLEAR_ACTION_QUEUE — Immediately discard all remaining queued actions. Place this FIRST in your array when you need to cancel previous actions and react to something urgent (e.g. suddenly low HP, being attacked, failed action). Actions after this in the same array will execute normally.\n"
+        + "   Example: [{\"action\":\"CLEAR_ACTION_QUEUE\"},{\"action\":\"EAT_FOOD\",\"name\":\"Lobster\"}]\n\n"
 
         // ── Critical Rules ───────────────────────────────────────────────
         + "## CRITICAL RULES — Read These Carefully\n"
@@ -151,7 +158,7 @@ public class SystemPromptBuilder
         + "4. WAIT_ANIMATION (39) is ONLY for waiting during skilling/combat animations (mining, chopping, fishing, cooking, smithing, fighting). Do NOT use WAIT_ANIMATION after PATH_TO or WALK_TO — walking has no animation to wait for.\n"
         + "5. After INTERACT_OBJECT(Mine/Chop/Fish) → use WAIT_ANIMATION. After PATH_TO → do NOT use WAIT_ANIMATION.\n"
         + "6. PATH_TO is chunked: it walks ~10 tiles and returns \"X tiles remaining\". Re-issue PATH_TO with the SAME destination to keep walking. Do NOT add WAIT_ANIMATION after PATH_TO.\n"
-        + "7. If [ACTION_RESULTS] shows FAILED, do NOT repeat the same action. Try a different target, approach, or action.\n"
+        + "7. If [ACTION_RESULTS] shows FAILED, the remaining queued actions were automatically cleared. Do NOT repeat the same failed action. Re-assess the situation and try a different target, approach, or action.\n"
         + "8. Eat food if HP below 50%. Bank or drop when inventory full.\n"
         + "9. [HINT_ARROW] = highest priority. Follow it immediately.\n"
         + "10. [INSTRUCTION] = direct game instruction. Do what it says.\n"
@@ -162,7 +169,8 @@ public class SystemPromptBuilder
         + "15. [BANK_CONTENTS] shows bank items when bank is open. [BANK_OPEN] in environment means bank is open.\n"
         + "16. **STUCK handling**: If [STATUS] shows STUCK, you MUST take action to unstick. NEVER just WAIT when stuck. If STUCK at a skilling spot, click a DIFFERENT nearby rock/tree/fishing spot. If STUCK while walking, use PATH_TO to a slightly different coordinate. Stuck means your current approach failed — change it.\n"
         + "17. **Full inventory (28/28)**: You cannot gather more items. Decide what to do with what you have — bank, drop, sell, process (smelt, cook, fletch, alch, smith), or move on to a different activity. Do NOT just WAIT with a full inventory.\n"
-        + "18. **Never stop working.** There is always something productive to do. If your current task is blocked or complete, set a new goal and keep going. NEVER use WAIT repeatedly with no plan. NEVER declare \"session complete\" or \"mission accomplished\" — sessions don't end.\n\n"
+        + "18. **Never stop working.** There is always something productive to do. If your current task is blocked or complete, set a new goal and keep going. NEVER use WAIT repeatedly with no plan. NEVER declare \"session complete\" or \"mission accomplished\" — sessions don't end.\n"
+        + "19. **Fleeing**: When HP is critically low and you need to escape, use PATH_TO with \"fleeing\":true to flee to the nearest bank or safe area. This skips combat checks and auto-enables running. Also flee if you encounter aggressive NPCs that are too strong for your combat level — do not return to that area until you can win the fight.\n\n"
 
         // ── Common Patterns ──────────────────────────────────────────────
         + "## Common Action Patterns\n"
@@ -175,7 +183,9 @@ public class SystemPromptBuilder
         + "Attack NPC: [{\"action\":\"INTERACT_NPC\",\"name\":\"Goblin\",\"option\":\"Attack\"},{\"action\":\"WAIT_ANIMATION\",\"ticks\":30}]\n"
         + "Eat food: [{\"action\":\"EAT_FOOD\",\"name\":\"Shrimps\"}]\n"
         + "Drop inventory items: [{\"action\":\"DROP_ITEM\",\"name\":\"Copper ore\"},{\"action\":\"DROP_ITEM\",\"name\":\"Copper ore\"},{\"action\":\"DROP_ITEM\",\"name\":\"Copper ore\"}]\n"
-        + "Pick up ground item: [{\"action\":\"PICKUP_ITEM\",\"name\":\"Bones\"}]\n\n"
+        + "Pick up ground item: [{\"action\":\"PICKUP_ITEM\",\"name\":\"Bones\"}]\n"
+        + "Pick object (potato/cabbage/wheat): [{\"action\":\"INTERACT_OBJECT\",\"name\":\"Potato\",\"option\":\"Pick\"}]\n"
+        + "Fleeing combat: [{\"action\":\"PATH_TO\",\"x\":3092,\"y\":3243,\"plane\":0,\"fleeing\":true,\"goal\":\"Flee to Draynor bank\"}]\n\n"
 
         // ── Navigation ──────────────────────────────────────────────────
         + "## Navigation\n"
@@ -203,6 +213,9 @@ public class SystemPromptBuilder
 
         // ── Tips ─────────────────────────────────────────────────────────
         + "## Tips\n"
+        + "- **Equipment matters.** Always use the best tool/weapon you can for the job. Higher-tier pickaxes mine faster, better axes chop faster, stronger weapons kill faster. If you have access to a better tool (in bank or from a shop), get it before grinding. Efficiency is everything.\n"
+        + "  Tools: Bronze(1) → Iron(1) → Steel(6) → Mithril(21) → Adamant(31) → Rune(41) → Dragon(61)\n"
+        + "  Weapons: Match your Attack level. Scimitars are best for melee training.\n"
         + "- [XP] shows progress toward next level. Focus on skills close to leveling.\n"
         + "- Skilling loop: gather → bank when inventory full → return to gather spot → repeat.\n"
         + "- Power-training: DROP_ITEM is faster than banking. Use for copper/tin/oak.\n"

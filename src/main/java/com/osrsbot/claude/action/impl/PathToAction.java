@@ -12,6 +12,7 @@ import com.osrsbot.claude.util.ObjectUtils;
 import net.runelite.api.*;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
 
 import java.util.Arrays;
@@ -41,8 +42,6 @@ public class PathToAction
     private static final int CANVAS_WALK_MAX_DIST = 8;
     private static final double CANVAS_WALK_CHANCE = 0.35;
 
-    /** Number of walk clicks per call before returning to Claude */
-    private static final int MAX_STEPS = 8;
     /** Safety timeout per call (catches stuck waits) */
     private static final long CALL_TIMEOUT_MS = 45_000;
 
@@ -99,8 +98,48 @@ public class PathToAction
                 "Arrived at (" + targetX + "," + targetY + ")");
         }
 
+        // Use XY distance for step calculation (distanceTo returns MAX_VALUE cross-plane)
+        int xyDistance = Math.max(Math.abs(playerPos.getX() - targetX), Math.abs(playerPos.getY() - targetY));
+        boolean samePlane = playerPos.getPlane() == targetPlane;
+        boolean fleeing = action.isFleeing();
+        int maxSteps = calcMaxSteps(xyDistance, fleeing);
+
         System.out.println("[ClaudeBot] PATH_TO: walking from " + playerPos
-            + " to " + target + " (" + playerPos.distanceTo(target) + " tiles)");
+            + " to " + target + " (" + xyDistance + " tiles"
+            + (samePlane ? "" : ", CROSS-PLANE from " + playerPos.getPlane() + " to " + targetPlane)
+            + ")" + (fleeing ? " [FLEEING]" : "")
+            + " maxSteps=" + maxSteps);
+
+        // Auto-enable run when fleeing
+        if (fleeing)
+        {
+            try
+            {
+                Boolean runEnabled = ClientThreadRunner.runOnClientThread(clientThread,
+                    () -> client.getVarpValue(173) == 1);
+                if (runEnabled != null && !runEnabled)
+                {
+                    java.awt.Point runOrb = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                        net.runelite.api.widgets.Widget widget =
+                            client.getWidget(WidgetInfo.MINIMAP_TOGGLE_RUN_ORB);
+                        if (widget == null || widget.isHidden()) return null;
+                        return new java.awt.Point(
+                            widget.getCanvasLocation().getX() + widget.getWidth() / 2,
+                            widget.getCanvasLocation().getY() + widget.getHeight() / 2);
+                    });
+                    if (runOrb != null)
+                    {
+                        human.moveAndClick(runOrb.x, runOrb.y);
+                        human.shortPause();
+                        System.out.println("[ClaudeBot] PATH_TO: auto-enabled run (fleeing)");
+                    }
+                }
+            }
+            catch (Throwable t)
+            {
+                System.err.println("[ClaudeBot] PATH_TO: failed to enable run: " + t.getMessage());
+            }
+        }
 
         long callStart = System.currentTimeMillis();
         TimingEngine timing = human.getTimingEngine();
@@ -108,7 +147,7 @@ public class PathToAction
         int stuckCount = 0;
         WorldPoint lastLoopPos = null;
 
-        while (steps < MAX_STEPS && System.currentTimeMillis() - callStart < CALL_TIMEOUT_MS)
+        while (steps < maxSteps && System.currentTimeMillis() - callStart < CALL_TIMEOUT_MS)
         {
             // --- Get current position ---
             playerPos = getPlayerPosition(client, clientThread);
@@ -119,8 +158,8 @@ public class PathToAction
 
             target = new WorldPoint(targetX, targetY, targetPlane);
 
-            // --- Check for combat interruption (skip first step so player can flee) ---
-            if (steps > 0)
+            // --- Check for combat interruption (skip first step so player can flee, skip entirely when fleeing) ---
+            if (steps > 0 && !fleeing)
             {
                 String attacker = checkForAttacker(client, clientThread);
                 if (attacker != null)
@@ -241,8 +280,16 @@ public class PathToAction
             }
 
             // --- Normal walk: canvas click for close tiles, minimap for far ---
-            int waypointDist = MIN_WAYPOINT_DIST
-                + RANDOM.nextInt(MAX_WAYPOINT_DIST - MIN_WAYPOINT_DIST + 1);
+            int waypointDist;
+            if (fleeing)
+            {
+                waypointDist = 14 + RANDOM.nextInt(4); // 14-17: max minimap range when fleeing
+            }
+            else
+            {
+                waypointDist = MIN_WAYPOINT_DIST
+                    + RANDOM.nextInt(MAX_WAYPOINT_DIST - MIN_WAYPOINT_DIST + 1);
+            }
             int waypointIdx = Math.min(currentIdx + waypointDist, path.size() - 1);
 
             if (transportIdx >= 0 && waypointIdx > transportIdx)
@@ -253,7 +300,7 @@ public class PathToAction
             WorldPoint waypoint = path.get(waypointIdx);
             int waypointTileDist = playerPos.distanceTo(waypoint);
 
-            System.out.println("[ClaudeBot] PATH_TO: step " + (steps + 1) + "/" + MAX_STEPS
+            System.out.println("[ClaudeBot] PATH_TO: step " + (steps + 1) + "/" + maxSteps
                 + " toward " + waypoint + " (" + remaining + " tiles remaining)");
 
             boolean clicked = false;
@@ -279,14 +326,46 @@ public class PathToAction
         }
 
         // Chunk complete — return progress so Claude can see game state and decide
-        int distRemaining = playerPos != null ? playerPos.distanceTo(target) : -1;
-        System.out.println("[ClaudeBot] PATH_TO: chunk done, " + distRemaining + " tiles remaining");
-        return ActionResult.success(ActionType.PATH_TO,
-            "Walking to (" + targetX + "," + targetY + "): "
-            + distRemaining + " tiles remaining. Re-issue PATH_TO to continue.");
+        String progressMsg;
+        if (playerPos == null)
+        {
+            progressMsg = "Walking to (" + targetX + "," + targetY + "): position unknown. Re-issue PATH_TO to continue.";
+        }
+        else if (playerPos.getPlane() != targetPlane)
+        {
+            int xyDist = Math.max(Math.abs(playerPos.getX() - targetX), Math.abs(playerPos.getY() - targetY));
+            progressMsg = "Walking to (" + targetX + "," + targetY + ",plane=" + targetPlane + "): "
+                + "currently on plane " + playerPos.getPlane() + " (need plane " + targetPlane + "), "
+                + xyDist + " tiles away horizontally. Re-issue PATH_TO to continue.";
+        }
+        else
+        {
+            int distRemaining = playerPos.distanceTo(target);
+            progressMsg = "Walking to (" + targetX + "," + targetY + "): "
+                + distRemaining + " tiles remaining. Re-issue PATH_TO to continue.";
+        }
+        System.out.println("[ClaudeBot] PATH_TO: chunk done — " + progressMsg);
+        return ActionResult.success(ActionType.PATH_TO, progressMsg);
     }
 
     // ───────────────────── Helpers ─────────────────────
+
+    /**
+     * Calculates max walk clicks per PATH_TO call based on total distance.
+     * Longer walks get more steps per chunk to reduce round-trips to Claude.
+     * Fleeing adds extra steps to cover ground faster.
+     */
+    private static int calcMaxSteps(int totalDistance, boolean fleeing)
+    {
+        int steps;
+        if (totalDistance <= 20)       steps = 8;   // short: same as before
+        else if (totalDistance <= 50)  steps = 12;  // medium: 50% more
+        else if (totalDistance <= 100) steps = 16;  // long: double
+        else                          steps = 20;  // very long: 2.5x
+
+        if (fleeing) steps += 5;
+        return steps;
+    }
 
     private static Object[] getClientData(Client client, ClientThread clientThread)
     {

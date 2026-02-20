@@ -166,6 +166,17 @@ public class ActionExecutor
             return;
         }
 
+        // CLEAR_ACTION_QUEUE: instantly clear remaining queue, no background dispatch
+        if (action.getType() == ActionType.CLEAR_ACTION_QUEUE)
+        {
+            int cleared = actionQueue.size();
+            actionQueue.clear();
+            System.out.println("[ClaudeBot] CLEAR_ACTION_QUEUE: cleared " + cleared + " queued actions");
+            recentResults.add(new ExecutedAction(action,
+                ActionResult.success(ActionType.CLEAR_ACTION_QUEUE, "Cleared " + cleared + " queued actions")));
+            return;
+        }
+
         currentAction = action;
         executing.set(true);
 
@@ -179,6 +190,18 @@ public class ActionExecutor
                 System.out.println("[ClaudeBot] Action " + action.getType() + ": " +
                     (lastResult.isSuccess() ? "OK" : "FAIL - " + lastResult.getMessage()));
 
+                // On failure, auto-clear remaining queued actions so the LLM can re-plan
+                if (!lastResult.isSuccess())
+                {
+                    int cleared = actionQueue.size();
+                    if (cleared > 0)
+                    {
+                        actionQueue.clear();
+                        System.out.println("[ClaudeBot] Auto-cleared " + cleared +
+                            " queued actions after failure of " + action.getType());
+                    }
+                }
+
                 // Humanized delay before allowing next action
                 int delay = humanSimulator.getTimingEngine().nextActionDelay();
                 humanSimulator.getTimingEngine().sleep(delay);
@@ -191,6 +214,15 @@ public class ActionExecutor
                 lastResult = ActionResult.failure(action.getType(),
                     t.getClass().getSimpleName() + ": " + t.getMessage());
                 recentResults.add(new ExecutedAction(action, lastResult));
+
+                // Auto-clear remaining queue on exception too
+                int cleared = actionQueue.size();
+                if (cleared > 0)
+                {
+                    actionQueue.clear();
+                    System.out.println("[ClaudeBot] Auto-cleared " + cleared +
+                        " queued actions after exception in " + action.getType());
+                }
             }
             finally
             {

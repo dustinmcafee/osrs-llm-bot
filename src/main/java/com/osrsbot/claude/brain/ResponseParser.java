@@ -20,6 +20,9 @@ public class ResponseParser
     // Last extracted goal from Claude's response
     private volatile String lastGoal = null;
 
+    // Parse errors from the most recent parse, fed back to the LLM
+    private final List<String> parseErrors = new ArrayList<>();
+
     /**
      * Maps common LLM-invented action names to real ActionTypes + default options.
      * Small local models often use natural-language names instead of our exact enum values.
@@ -106,10 +109,22 @@ public class ResponseParser
         return lastGoal;
     }
 
+    /**
+     * Returns parse errors from the most recent parse, then clears them.
+     * These should be fed back to the LLM as action results so it learns from mistakes.
+     */
+    public List<String> getAndClearParseErrors()
+    {
+        List<String> errors = new ArrayList<>(parseErrors);
+        parseErrors.clear();
+        return errors;
+    }
+
     public List<BotAction> parse(String response)
     {
         List<BotAction> actions = new ArrayList<>();
         lastGoal = null;
+        parseErrors.clear();
 
         try
         {
@@ -144,7 +159,10 @@ public class ResponseParser
                     type = ActionType.fromId(actionEl.getAsInt());
                     if (type == null)
                     {
-                        System.err.println("[ClaudeBot] Unknown action ID: " + actionEl.getAsInt());
+                        String err = "PARSE_ERROR: Unknown action ID " + actionEl.getAsInt()
+                            + " in " + obj + ". Use a valid action type name like INTERACT_OBJECT, INTERACT_NPC, etc.";
+                        System.err.println("[ClaudeBot] " + err);
+                        parseErrors.add(err);
                         continue;
                     }
                 }
@@ -201,7 +219,12 @@ public class ResponseParser
                             }
                             else
                             {
-                                System.err.println("[ClaudeBot] Unknown action type: " + actionStr);
+                                String err = "PARSE_ERROR: Unknown action \"" + actionEl.getAsString()
+                                    + "\" in " + obj + ". Valid actions: INTERACT_OBJECT, INTERACT_NPC, PATH_TO, EAT_FOOD, PICKUP_ITEM, etc. "
+                                    + "Use \"name\" for the target name and \"option\" for the verb (e.g. Mine, Attack, Pick). "
+                                    + "Do NOT put the verb in the \"action\" field.";
+                                System.err.println("[ClaudeBot] " + err);
+                                parseErrors.add(err);
                                 continue;
                             }
                         }
@@ -227,6 +250,7 @@ public class ResponseParser
                 if (obj.has("npc")) action.setNpc(safeString(obj, "npc"));
                 if (obj.has("object")) action.setObject(safeString(obj, "object"));
                 if (obj.has("text")) action.setText(safeString(obj, "text"));
+                if (obj.has("fleeing")) action.setFleeing(safeBoolean(obj, "fleeing"));
 
                 // Apply defaults from alias if the model didn't specify them
                 if (resolvedAlias != null)
@@ -255,6 +279,25 @@ public class ResponseParser
                     type = corrected;
                 }
 
+                // Auto-recover "object" field → "name" for INTERACT_OBJECT
+                if (action.getName() == null && action.getObject() != null
+                    && (type == ActionType.INTERACT_OBJECT))
+                {
+                    action.setName(action.getObject());
+                    String fix = "Auto-fixed: used \"object\" field as \"name\" for INTERACT_OBJECT. Use \"name\" next time.";
+                    System.out.println("[ClaudeBot] " + fix);
+                    if (action.getParseWarning() == null) action.setParseWarning(fix);
+                }
+
+                // Validate required fields for key action types
+                String validationError = validateRequiredFields(type, action);
+                if (validationError != null)
+                {
+                    System.err.println("[ClaudeBot] " + validationError);
+                    parseErrors.add(validationError);
+                    continue;
+                }
+
                 // Extract goal from any action (not just the first)
                 if (obj.has("goal") && lastGoal == null)
                 {
@@ -268,6 +311,8 @@ public class ResponseParser
         {
             System.err.println("[ClaudeBot] Failed to parse response: " + e.getMessage());
             System.err.println("[ClaudeBot] Raw response: " + response);
+            parseErrors.add("PARSE_ERROR: Could not parse your JSON response: " + e.getMessage()
+                + ". Your response MUST contain a valid JSON array like [{\"action\":\"INTERACT_OBJECT\",\"name\":\"Potato\",\"option\":\"Pick\"}]");
             // Return a wait action on parse failure
             BotAction wait = new BotAction();
             wait.setType(ActionType.WAIT);
@@ -434,6 +479,27 @@ public class ResponseParser
     }
 
     /**
+     * Safely extract a boolean from a JSON field, handling string values like "true"/"1"/"yes".
+     */
+    private static boolean safeBoolean(JsonObject obj, String key)
+    {
+        try
+        {
+            return obj.get(key).getAsBoolean();
+        }
+        catch (Exception e)
+        {
+            try
+            {
+                String raw = obj.get(key).getAsString().trim().toLowerCase();
+                return "true".equals(raw) || "1".equals(raw) || "yes".equals(raw);
+            }
+            catch (Exception ignored) {}
+            return false;
+        }
+    }
+
+    /**
      * Detects when the LLM used the wrong integer ID but the fields clearly indicate
      * a different action type. Returns the corrected type, or the original if no
      * correction is needed.
@@ -491,6 +557,67 @@ public class ResponseParser
         }
 
         return parsed;
+    }
+
+    /**
+     * Validates that an action has the required fields.
+     * Returns an error message if validation fails, null if OK.
+     */
+    private static String validateRequiredFields(ActionType type, BotAction action)
+    {
+        switch (type)
+        {
+            case INTERACT_OBJECT:
+                if (action.getName() == null || action.getName().isEmpty())
+                {
+                    return "PARSE_ERROR: INTERACT_OBJECT requires \"name\" (the object name from [NEARBY_OBJECTS]) "
+                        + "and \"option\" (the verb like Mine, Pick, Bank, Chop down). "
+                        + "Example: {\"action\":\"INTERACT_OBJECT\",\"name\":\"Potato\",\"option\":\"Pick\"}";
+                }
+                // Missing option is allowed — action handler will query available options and return them
+                break;
+            case INTERACT_NPC:
+                if (action.getName() == null || action.getName().isEmpty())
+                {
+                    return "PARSE_ERROR: INTERACT_NPC requires \"name\" (the NPC name from [NEARBY_NPCS]) "
+                        + "and \"option\" (the verb like Attack, Talk-to, Bank). "
+                        + "Example: {\"action\":\"INTERACT_NPC\",\"name\":\"Goblin\",\"option\":\"Attack\"}";
+                }
+                // Missing option is allowed — action handler will query available options and return them
+                break;
+            case EAT_FOOD:
+                if (action.getName() == null || action.getName().isEmpty())
+                {
+                    return "PARSE_ERROR: EAT_FOOD requires \"name\" (the food item name from your inventory). "
+                        + "Example: {\"action\":\"EAT_FOOD\",\"name\":\"Lobster\"}";
+                }
+                break;
+            case PICKUP_ITEM:
+                if (action.getName() == null || action.getName().isEmpty())
+                {
+                    return "PARSE_ERROR: PICKUP_ITEM requires \"name\" (item name from [NEARBY_GROUND_ITEMS]). "
+                        + "For objects like Potato/Cabbage that show in [NEARBY_OBJECTS], use INTERACT_OBJECT with option \"Pick\" instead.";
+                }
+                break;
+            case PATH_TO:
+                if (action.getX() == 0 && action.getY() == 0)
+                {
+                    return "PARSE_ERROR: PATH_TO requires \"x\" and \"y\" coordinates. "
+                        + "Example: {\"action\":\"PATH_TO\",\"x\":3200,\"y\":3200}";
+                }
+                break;
+            case BANK_WITHDRAW:
+            case BANK_DEPOSIT:
+                if (action.getName() == null || action.getName().isEmpty())
+                {
+                    return "PARSE_ERROR: " + type.name() + " requires \"name\" and \"quantity\". "
+                        + "Example: {\"action\":\"" + type.name() + "\",\"name\":\"Lobster\",\"quantity\":5}";
+                }
+                break;
+            default:
+                break;
+        }
+        return null;
     }
 
     private static class ActionAlias

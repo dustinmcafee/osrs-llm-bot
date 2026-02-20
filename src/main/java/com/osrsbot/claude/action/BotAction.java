@@ -30,4 +30,7 @@ public class BotAction
 
     // Parser warning (e.g. auto-corrected action ID)
     private String parseWarning;
+
+    // PATH_TO: flee mode (skip combat checks, auto-run, larger chunks)
+    private boolean fleeing;
 }

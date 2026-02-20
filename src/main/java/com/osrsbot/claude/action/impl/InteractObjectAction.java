@@ -21,7 +21,44 @@ public class InteractObjectAction
         }
         if (action.getOption() == null || action.getOption().isEmpty())
         {
-            return ActionResult.failure(ActionType.INTERACT_OBJECT, "No option specified for object: " + action.getName());
+            // Query available options so the LLM knows what's possible
+            try
+            {
+                String availableOptions = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    TileObject obj = objectUtils.findNearest(client, action.getName(), null);
+                    if (obj == null) return "Object not found nearby: " + action.getName();
+
+                    ObjectComposition comp = client.getObjectDefinition(obj.getId());
+                    if (comp != null && comp.getImpostorIds() != null)
+                    {
+                        ObjectComposition impostor = comp.getImpostor();
+                        if (impostor != null) comp = impostor;
+                    }
+                    if (comp == null) return "Object has no actions: " + action.getName();
+
+                    String[] actions = comp.getActions();
+                    if (actions == null) return "Object has no actions: " + action.getName();
+
+                    StringBuilder sb = new StringBuilder();
+                    for (String a : actions)
+                    {
+                        if (a != null && !a.isEmpty())
+                        {
+                            if (sb.length() > 0) sb.append(", ");
+                            sb.append(a);
+                        }
+                    }
+                    return sb.toString();
+                });
+                return ActionResult.failure(ActionType.INTERACT_OBJECT,
+                    "Missing \"option\" for " + action.getName() + ". Available options: [" + availableOptions + "]. "
+                    + "Use: {\"action\":\"INTERACT_OBJECT\",\"name\":\"" + action.getName() + "\",\"option\":\"<one of these>\"}");
+            }
+            catch (Throwable t)
+            {
+                return ActionResult.failure(ActionType.INTERACT_OBJECT,
+                    "Missing \"option\" for " + action.getName() + ". Check [NEARBY_OBJECTS] for available options.");
+            }
         }
 
         // Phase 1: Lookup on client thread (blocks background thread until complete)

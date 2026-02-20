@@ -21,7 +21,39 @@ public class InteractNpcAction
         }
         if (action.getOption() == null || action.getOption().isEmpty())
         {
-            return ActionResult.failure(ActionType.INTERACT_NPC, "No option specified for NPC: " + action.getName());
+            // Query available options so the LLM knows what's possible
+            try
+            {
+                String availableOptions = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    NPC npc = npcUtils.findNearest(client, action.getName());
+                    if (npc == null) return "NPC not found nearby: " + action.getName();
+
+                    NPCComposition comp = npc.getTransformedComposition();
+                    if (comp == null) return "NPC has no actions: " + action.getName();
+
+                    String[] actions = comp.getActions();
+                    if (actions == null) return "NPC has no actions: " + action.getName();
+
+                    StringBuilder sb = new StringBuilder();
+                    for (String a : actions)
+                    {
+                        if (a != null && !a.isEmpty())
+                        {
+                            if (sb.length() > 0) sb.append(", ");
+                            sb.append(a);
+                        }
+                    }
+                    return sb.toString();
+                });
+                return ActionResult.failure(ActionType.INTERACT_NPC,
+                    "Missing \"option\" for " + action.getName() + ". Available options: [" + availableOptions + "]. "
+                    + "Use: {\"action\":\"INTERACT_NPC\",\"name\":\"" + action.getName() + "\",\"option\":\"<one of these>\"}");
+            }
+            catch (Throwable t)
+            {
+                return ActionResult.failure(ActionType.INTERACT_NPC,
+                    "Missing \"option\" for " + action.getName() + ". Check [NEARBY_NPCS] for available options.");
+            }
         }
 
         // Phase 1: Lookup on client thread (blocks background thread until complete)
