@@ -8,10 +8,14 @@ import com.osrsbot.claude.util.ClientThreadRunner;
 import com.osrsbot.claude.util.ItemUtils;
 import net.runelite.api.Client;
 import net.runelite.api.widgets.Widget;
+import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
 
 public class UseItemOnItemAction
 {
+    private static final int VERIFY_POLL_MS = 100;
+    private static final int VERIFY_TIMEOUT_MS = 1800; // 3 game ticks
+
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
         if (action.getItem1() == null || action.getItem1().isEmpty())
@@ -23,7 +27,7 @@ public class UseItemOnItemAction
             return ActionResult.failure(ActionType.USE_ITEM_ON_ITEM, "No item2 name specified");
         }
 
-        // Phase 1: Widget lookups on client thread
+        // Phase 1: Widget lookups on client thread + count total inventory for verification
         Object[] lookupData;
         try
         {
@@ -37,7 +41,8 @@ public class UseItemOnItemAction
                 java.awt.Point p1 = getWidgetCenter(item1);
                 java.awt.Point p2 = getWidgetCenter(item2);
 
-                return new Object[]{ "OK", p1, p2 };
+                int totalItems = countTotalInventoryItems(client);
+                return new Object[]{ "OK", p1, p2, totalItems };
             });
         }
         catch (Throwable t)
@@ -58,6 +63,7 @@ public class UseItemOnItemAction
 
         java.awt.Point p1 = (java.awt.Point) lookupData[1];
         java.awt.Point p2 = (java.awt.Point) lookupData[2];
+        int totalBefore = (int) lookupData[3];
 
         if (p1 == null)
         {
@@ -73,6 +79,10 @@ public class UseItemOnItemAction
         human.shortPause();
         human.moveAndClick(p2.x, p2.y);
 
+        // Phase 3: Wait for inventory to change (item consumed or transformed).
+        // May timeout if the action opens a Make interface instead — that's OK.
+        waitForInventoryChange(client, clientThread, totalBefore, human);
+
         return ActionResult.success(ActionType.USE_ITEM_ON_ITEM);
     }
 
@@ -81,5 +91,42 @@ public class UseItemOnItemAction
         java.awt.Rectangle bounds = widget.getBounds();
         if (bounds == null) return null;
         return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+    }
+
+    /**
+     * Polls until total inventory item count changes or timeout.
+     */
+    private static void waitForInventoryChange(Client client, ClientThread clientThread,
+                                                 int countBefore, HumanSimulator human)
+    {
+        long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline)
+        {
+            human.getTimingEngine().sleep(VERIFY_POLL_MS);
+            try
+            {
+                int current = ClientThreadRunner.runOnClientThread(clientThread,
+                    () -> countTotalInventoryItems(client));
+                if (current != countBefore) return;
+            }
+            catch (Throwable t) {}
+        }
+    }
+
+    /**
+     * Count total number of occupied inventory slots.
+     */
+    private static int countTotalInventoryItems(Client client)
+    {
+        Widget inventory = client.getWidget(WidgetInfo.INVENTORY);
+        if (inventory == null) return 0;
+        int count = 0;
+        Widget[] children = inventory.getDynamicChildren();
+        if (children == null) return 0;
+        for (Widget child : children)
+        {
+            if (child.getItemId() > 0) count++;
+        }
+        return count;
     }
 }

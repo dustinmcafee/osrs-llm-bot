@@ -5,7 +5,7 @@ import com.osrsbot.claude.action.ActionType;
 import com.osrsbot.claude.action.BotAction;
 import com.osrsbot.claude.human.HumanSimulator;
 import com.osrsbot.claude.util.ClientThreadRunner;
-import net.runelite.api.Client;
+import net.runelite.api.*;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.game.ItemManager;
@@ -18,8 +18,9 @@ import java.awt.Rectangle;
  *
  * Phase 1 (client thread): Find the item in the player's inventory panel
  * within the shop view (group 301, child 0).
- * Phase 2 (background thread): Right-click and select "Sell X" via
- * humanized MenuInteractor interaction.
+ * Phase 2 (background thread): Move mouse to the item for natural behavior.
+ * Phase 3 (client thread): Read real menu entries and fire the matching "Sell X"
+ * action via client.menuAction() — avoids fragile right-click menu pixel clicking.
  */
 public class ShopSellAction
 {
@@ -78,23 +79,68 @@ public class ShopSellAction
             return ActionResult.failure(ActionType.SHOP_SELL, "Item not found in inventory: " + itemName);
         }
 
-        // Phase 2: Right-click and select sell option via humanized interaction
+        // Phase 2: Move mouse to item on background thread (humanized)
+        human.moveMouse(itemPoint.x, itemPoint.y);
+        human.shortPause();
+
+        // Phase 3: Fire menu action using real menu entries from the game.
+        // This avoids fragile right-click menu pixel clicking.
         String sellOption = getSellOption(quantity);
-        boolean selected = human.moveAndRightClickSelect(client, itemPoint.x, itemPoint.y, sellOption, itemName);
+        String fItemName = itemName;
 
-        if (!selected)
-        {
-            // Fallback: try "Sell 1"
-            if (!"Sell 1".equals(sellOption))
+        System.out.println("[ClaudeBot] ShopSell: option=" + sellOption + " for '" + fItemName + "'");
+
+        clientThread.invokeLater(() -> {
+            try
             {
-                selected = human.moveAndRightClickSelect(client, itemPoint.x, itemPoint.y, "Sell 1", itemName);
-            }
-        }
+                MenuEntry[] entries = client.getMenuEntries();
+                MenuEntry match = null;
+                MenuEntry fallback = null;
 
-        if (!selected)
-        {
-            return ActionResult.failure(ActionType.SHOP_SELL, "Sell option not found for: " + itemName);
-        }
+                if (entries != null)
+                {
+                    for (MenuEntry entry : entries)
+                    {
+                        String entryOption = entry.getOption();
+                        String entryTarget = entry.getTarget();
+                        if (entryOption == null || entryTarget == null) continue;
+                        if (!entryTarget.toLowerCase().contains(fItemName.toLowerCase())) continue;
+
+                        if (entryOption.equalsIgnoreCase(sellOption))
+                        {
+                            match = entry;
+                            break;
+                        }
+                        // Track "Sell 1" as fallback
+                        if (entryOption.equalsIgnoreCase("Sell 1"))
+                        {
+                            fallback = entry;
+                        }
+                    }
+                }
+
+                MenuEntry chosen = match != null ? match : fallback;
+                if (chosen != null)
+                {
+                    System.out.println("[ClaudeBot] ShopSell: using menu entry: " + chosen.getOption()
+                        + " target=" + chosen.getTarget());
+                    client.menuAction(
+                        chosen.getParam0(), chosen.getParam1(),
+                        chosen.getType(), chosen.getIdentifier(),
+                        -1, chosen.getOption(), chosen.getTarget()
+                    );
+                }
+                else
+                {
+                    System.err.println("[ClaudeBot] ShopSell: no matching menu entry for '" + sellOption + "' on '" + fItemName + "'");
+                }
+            }
+            catch (Throwable t)
+            {
+                System.err.println("[ClaudeBot] ShopSell menuAction FAILED: " + t.getClass().getName() + ": " + t.getMessage());
+                t.printStackTrace(System.err);
+            }
+        });
 
         // Wait one game tick so shop/inventory refreshes before next action
         human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());

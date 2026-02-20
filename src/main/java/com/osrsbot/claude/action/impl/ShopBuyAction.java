@@ -5,7 +5,7 @@ import com.osrsbot.claude.action.ActionType;
 import com.osrsbot.claude.action.BotAction;
 import com.osrsbot.claude.human.HumanSimulator;
 import com.osrsbot.claude.util.ClientThreadRunner;
-import net.runelite.api.Client;
+import net.runelite.api.*;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.game.ItemManager;
@@ -17,8 +17,9 @@ import java.awt.Rectangle;
  * Buys an item from an NPC shop interface.
  *
  * Phase 1 (client thread): Find the item in the shop widget (group 300, child 16).
- * Phase 2 (background thread): Right-click the item and select the appropriate
- * "Buy X" option via MenuInteractor — all through HumanSimulator for natural behavior.
+ * Phase 2 (background thread): Move mouse to the item for natural behavior.
+ * Phase 3 (client thread): Read real menu entries and fire the matching "Buy X"
+ * action via client.menuAction() — avoids fragile right-click menu pixel clicking.
  */
 public class ShopBuyAction
 {
@@ -77,23 +78,68 @@ public class ShopBuyAction
             return ActionResult.failure(ActionType.SHOP_BUY, "Item not found in shop: " + itemName);
         }
 
-        // Phase 2: Right-click and select buy option via humanized interaction
+        // Phase 2: Move mouse to item on background thread (humanized)
+        human.moveMouse(itemPoint.x, itemPoint.y);
+        human.shortPause();
+
+        // Phase 3: Fire menu action using real menu entries from the game.
+        // This avoids fragile right-click menu pixel clicking.
         String buyOption = getBuyOption(quantity);
-        boolean selected = human.moveAndRightClickSelect(client, itemPoint.x, itemPoint.y, buyOption, itemName);
+        String fItemName = itemName;
 
-        if (!selected)
-        {
-            // Fallback: try "Buy 1" if the specific quantity wasn't available
-            if (!"Buy 1".equals(buyOption))
+        System.out.println("[ClaudeBot] ShopBuy: option=" + buyOption + " for '" + fItemName + "'");
+
+        clientThread.invokeLater(() -> {
+            try
             {
-                selected = human.moveAndRightClickSelect(client, itemPoint.x, itemPoint.y, "Buy 1", itemName);
-            }
-        }
+                MenuEntry[] entries = client.getMenuEntries();
+                MenuEntry match = null;
+                MenuEntry fallback = null;
 
-        if (!selected)
-        {
-            return ActionResult.failure(ActionType.SHOP_BUY, "Buy option not found for: " + itemName);
-        }
+                if (entries != null)
+                {
+                    for (MenuEntry entry : entries)
+                    {
+                        String entryOption = entry.getOption();
+                        String entryTarget = entry.getTarget();
+                        if (entryOption == null || entryTarget == null) continue;
+                        if (!entryTarget.toLowerCase().contains(fItemName.toLowerCase())) continue;
+
+                        if (entryOption.equalsIgnoreCase(buyOption))
+                        {
+                            match = entry;
+                            break;
+                        }
+                        // Track "Buy 1" as fallback
+                        if (entryOption.equalsIgnoreCase("Buy 1"))
+                        {
+                            fallback = entry;
+                        }
+                    }
+                }
+
+                MenuEntry chosen = match != null ? match : fallback;
+                if (chosen != null)
+                {
+                    System.out.println("[ClaudeBot] ShopBuy: using menu entry: " + chosen.getOption()
+                        + " target=" + chosen.getTarget());
+                    client.menuAction(
+                        chosen.getParam0(), chosen.getParam1(),
+                        chosen.getType(), chosen.getIdentifier(),
+                        -1, chosen.getOption(), chosen.getTarget()
+                    );
+                }
+                else
+                {
+                    System.err.println("[ClaudeBot] ShopBuy: no matching menu entry for '" + buyOption + "' on '" + fItemName + "'");
+                }
+            }
+            catch (Throwable t)
+            {
+                System.err.println("[ClaudeBot] ShopBuy menuAction FAILED: " + t.getClass().getName() + ": " + t.getMessage());
+                t.printStackTrace(System.err);
+            }
+        });
 
         // Wait one game tick so shop stock/inventory refreshes before next action
         human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());

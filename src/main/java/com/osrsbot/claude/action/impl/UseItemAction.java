@@ -44,6 +44,10 @@ public class UseItemAction
 
         // Phase 2: Click on background thread
         human.moveAndClick(point.x, point.y);
+
+        // Wait one game tick so the game registers "Use" mode before the next action
+        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+
         return ActionResult.success(ActionType.USE_ITEM);
     }
 }

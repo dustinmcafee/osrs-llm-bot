@@ -20,6 +20,8 @@ public class BankDepositAction
     private static final int VERIFY_TIMEOUT_MS = 2400; // 4 game ticks
     private static final int INPUT_TIMEOUT_MS = 2400; // 4 game ticks for chatbox input to appear
 
+    // Bank quantity selector buttons (group 12) — same buttons control both withdraw and deposit
+    private static final int BANK_QTY_GROUP = 12;
 
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
@@ -87,30 +89,76 @@ public class BankDepositAction
         java.awt.Point point = (java.awt.Point) lookupData[1];
         int invCountBefore = (int) lookupData[2];
 
-        // Phase 2: Right-click select on background thread
+        // Phase 2: Click quantity selector button, then left-click the item.
+        // Uses the bank's quantity selector buttons (widget group 12) to set the
+        // default deposit amount, then left-click. This avoids the right-click menu
+        // entirely — pixel-clicking inside right-click menus is fragile and often
+        // lands on the wrong entry (e.g. Deposit-1 instead of Deposit-All).
         int qty = action.getQuantity();
         if (qty == 0) qty = 1; // Default to 1 when no quantity specified
-        String depositOption = getDepositOption(qty);
         boolean needsTyping = isCustomQuantity(qty);
+        int qtyButtonChild = getQuantityButtonChild(qty);
 
-        boolean selected = human.moveAndRightClickSelect(client, point.x, point.y, depositOption, itemName);
-        if (!selected)
-        {
-            return ActionResult.failure(ActionType.BANK_DEPOSIT, "Deposit option not found: " + depositOption);
-        }
+        System.out.println("[ClaudeBot] BankDeposit: qty=" + qty + " button=child(" + qtyButtonChild + ") for '" + itemName + "'");
 
-        // If custom quantity, wait for chatbox input dialog then type the number
-        if (needsTyping)
+        // Click the quantity selector button
+        try
         {
-            if (!waitForChatboxInput(client, clientThread, human))
+            java.awt.Point qtyBtnPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Widget qtyBtn = client.getWidget(BANK_QTY_GROUP, qtyButtonChild);
+                if (qtyBtn == null || qtyBtn.isHidden()) return null;
+                java.awt.Rectangle bounds = qtyBtn.getBounds();
+                if (bounds == null) return null;
+                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+            });
+
+            if (qtyBtnPoint != null)
             {
-                System.err.println("[ClaudeBot] BankDeposit: Deposit-X input dialog did not appear for " + itemName);
-                return ActionResult.failure(ActionType.BANK_DEPOSIT,
-                    "Deposit-X dialog did not appear for " + itemName);
+                human.moveAndClick(qtyBtnPoint.x, qtyBtnPoint.y);
+                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+
+                // For Deposit-X, a chatbox input dialog appears — type the quantity
+                if (needsTyping)
+                {
+                    if (!waitForChatboxInput(client, clientThread, human))
+                    {
+                        System.err.println("[ClaudeBot] BankDeposit: Deposit-X input dialog did not appear for " + itemName);
+                        return ActionResult.failure(ActionType.BANK_DEPOSIT,
+                            "Deposit-X dialog did not appear for " + itemName);
+                    }
+                    human.typeText(String.valueOf(qty));
+                    human.pressKey(KeyEvent.VK_ENTER);
+                    human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+                }
             }
-            human.typeText(String.valueOf(qty));
-            human.pressKey(KeyEvent.VK_ENTER);
+            else
+            {
+                System.err.println("[ClaudeBot] BankDeposit: quantity button not found (child=" + qtyButtonChild + ")");
+            }
         }
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] BankDeposit: quantity button click failed: " + t.getMessage());
+        }
+
+        // Re-find the item position (bank may have re-rendered after quantity button click)
+        try
+        {
+            java.awt.Point freshPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Widget bankInventory = client.getWidget(WidgetInfo.BANK_INVENTORY_ITEMS_CONTAINER);
+                if (bankInventory == null) return null;
+                Widget item = itemUtils.findInWidget(bankInventory, itemName);
+                if (item == null) return null;
+                java.awt.Rectangle bounds = item.getBounds();
+                if (bounds == null) return null;
+                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+            });
+            if (freshPoint != null) point = freshPoint;
+        }
+        catch (Throwable t) {}
+
+        // Left-click the item to deposit (quantity mode already set by the button click)
+        human.moveAndClick(point.x, point.y);
 
         // Phase 3: Wait for the deposit to actually complete (item leaves inventory)
         if (!waitForInventoryDecrease(client, clientThread, itemUtils, itemName, invCountBefore, human))
@@ -179,16 +227,21 @@ public class BankDepositAction
     }
 
     /**
-     * Returns the right-click menu option string for the given quantity.
-     * OSRS bank menu options: Deposit-1, Deposit-5, Deposit-10, Deposit-All, Deposit-X
+     * Maps the requested quantity to the bank's quantity selector button widget child ID.
+     * Widget group 12:
+     *   child 23 = "1"
+     *   child 25 = "5"
+     *   child 27 = "10"
+     *   child 29 = "X" (custom)
+     *   child 31 = "All"
      */
-    private static String getDepositOption(int quantity)
+    private static int getQuantityButtonChild(int quantity)
     {
-        if (quantity == -1) return "Deposit-All";
-        if (quantity == 1) return "Deposit-1";
-        if (quantity == 5) return "Deposit-5";
-        if (quantity == 10) return "Deposit-10";
-        return "Deposit-X"; // any other quantity uses Deposit-X + type number
+        if (quantity == 1) return 23;
+        if (quantity == 5) return 25;
+        if (quantity == 10) return 27;
+        if (quantity == -1) return 31; // All
+        return 29; // X (custom quantity — requires typing)
     }
 
     private static boolean isCustomQuantity(int quantity)
