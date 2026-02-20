@@ -67,7 +67,8 @@ public class Pathfinder
             Node node = boundary.poll();
 
             if (node.position.getX() == target.getX()
-                && node.position.getY() == target.getY())
+                && node.position.getY() == target.getY()
+                && node.position.getPlane() == target.getPlane())
             {
                 return node.path();
             }

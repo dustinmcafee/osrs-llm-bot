@@ -34,15 +34,15 @@ import java.util.Set;
 public class PathToAction
 {
     private static final Random RANDOM = new Random();
-    private static final int MIN_WAYPOINT_DIST = 7;
-    private static final int MAX_WAYPOINT_DIST = 14;
+    private static final int MIN_WAYPOINT_DIST = 10;
+    private static final int MAX_WAYPOINT_DIST = 17;
     private static final int MINIMAP_TILE_RANGE = 17;
     private static final int ARRIVAL_DISTANCE = 2;
     private static final int CANVAS_WALK_MAX_DIST = 8;
     private static final double CANVAS_WALK_CHANCE = 0.35;
 
     /** Number of walk clicks per call before returning to Claude */
-    private static final int MAX_STEPS = 3;
+    private static final int MAX_STEPS = 8;
     /** Safety timeout per call (catches stuck waits) */
     private static final long CALL_TIMEOUT_MS = 45_000;
 
@@ -88,7 +88,9 @@ public class PathToAction
             return ActionResult.failure(ActionType.PATH_TO, "Player not found");
         }
 
-        WorldPoint target = new WorldPoint(targetX, targetY, playerPos.getPlane());
+        // Use explicit plane if provided, otherwise default to player's current plane
+        int targetPlane = action.getPlane() >= 0 ? action.getPlane() : playerPos.getPlane();
+        WorldPoint target = new WorldPoint(targetX, targetY, targetPlane);
 
         // Already there?
         if (playerPos.distanceTo(target) <= ARRIVAL_DISTANCE)
@@ -115,18 +117,21 @@ public class PathToAction
                 return ActionResult.failure(ActionType.PATH_TO, "Lost player position mid-walk");
             }
 
-            target = new WorldPoint(targetX, targetY, playerPos.getPlane());
+            target = new WorldPoint(targetX, targetY, targetPlane);
 
-            // --- Check for combat interruption ---
-            String attacker = checkForAttacker(client, clientThread);
-            if (attacker != null)
+            // --- Check for combat interruption (skip first step so player can flee) ---
+            if (steps > 0)
             {
-                int distRemaining = playerPos.distanceTo(target);
-                System.out.println("[ClaudeBot] PATH_TO: under attack by "
-                    + attacker + " at " + playerPos);
-                return ActionResult.failure(ActionType.PATH_TO,
-                    "Under attack by " + attacker + " at " + playerPos
-                    + ", " + distRemaining + " tiles from destination (" + targetX + "," + targetY + ")");
+                String attacker = checkForAttacker(client, clientThread);
+                if (attacker != null)
+                {
+                    int distRemaining = playerPos.distanceTo(target);
+                    System.out.println("[ClaudeBot] PATH_TO: under attack by "
+                        + attacker + " at " + playerPos);
+                    return ActionResult.failure(ActionType.PATH_TO,
+                        "Under attack by " + attacker + " at " + playerPos
+                        + ", " + distRemaining + " tiles from destination (" + targetX + "," + targetY + ")");
+                }
             }
 
             // --- Check arrival ---

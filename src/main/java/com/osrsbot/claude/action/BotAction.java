@@ -14,6 +14,7 @@ public class BotAction
     private String option;
     private int x;
     private int y;
+    private int plane = -1; // -1 = use current player plane
     private int ticks;
     private int quantity;
 

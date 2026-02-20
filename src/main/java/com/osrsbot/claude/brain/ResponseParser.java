@@ -70,8 +70,13 @@ public class ResponseParser
         alias("UNEQUIP", ActionType.UNEQUIP_ITEM, null);
         alias("REMOVE", ActionType.UNEQUIP_ITEM, null);
         alias("DEPOSIT", ActionType.BANK_DEPOSIT, null);
+        alias("DEPOSIT_ITEM", ActionType.BANK_DEPOSIT, null);
         alias("WITHDRAW", ActionType.BANK_WITHDRAW, null);
+        alias("WITHDRAW_ITEM", ActionType.BANK_WITHDRAW, null);
         alias("DEPOSIT_ALL", ActionType.BANK_DEPOSIT_ALL, null);
+        alias("OPEN_BANK", ActionType.INTERACT_OBJECT, "Bank");
+        alias("USE_BANK", ActionType.INTERACT_OBJECT, "Bank");
+        alias("CLOSE_BANK", ActionType.BANK_CLOSE, null);
         alias("RUN", ActionType.TOGGLE_RUN, null);
         alias("WALK", ActionType.WALK_TO, null);
         alias("MOVE", ActionType.WALK_TO, null);
@@ -176,6 +181,7 @@ public class ResponseParser
                 if (obj.has("option")) action.setOption(safeString(obj, "option"));
                 if (obj.has("x")) action.setX(safeInt(obj, "x"));
                 if (obj.has("y")) action.setY(safeInt(obj, "y"));
+                if (obj.has("plane")) action.setPlane(safeInt(obj, "plane"));
                 if (obj.has("ticks")) action.setTicks(safeInt(obj, "ticks"));
                 if (obj.has("quantity")) action.setQuantity(safeInt(obj, "quantity"));
                 if (obj.has("item")) action.setItem(safeString(obj, "item"));

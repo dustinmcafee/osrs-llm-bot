@@ -7,19 +7,20 @@ import com.osrsbot.claude.human.HumanSimulator;
 import com.osrsbot.claude.util.ClientThreadRunner;
 import net.runelite.api.AnimationID;
 import net.runelite.api.Client;
+import net.runelite.api.NPC;
+import net.runelite.api.Player;
 import net.runelite.client.callback.ClientThread;
 
 /**
  * Waits until the player's current animation completes (returns to IDLE).
- * Useful for mining, woodcutting, fishing, etc. where the LLM should wait
- * for the action to finish before issuing the next command.
+ * Bails out immediately if the player is under attack.
  *
- * Optional "ticks" field sets max wait time (default 10 ticks = 6 seconds).
+ * Optional "ticks" field sets max wait time (default 20 ticks = 12 seconds).
  */
 public class WaitAnimationAction
 {
     private static final int POLL_MS = 300; // poll ~twice per game tick
-    private static final int DEFAULT_MAX_TICKS = 10;
+    private static final int DEFAULT_MAX_TICKS = 20;
     private static final int MS_PER_TICK = 600;
 
     public static ActionResult execute(Client client, HumanSimulator human, ClientThread clientThread, BotAction action)
@@ -27,6 +28,7 @@ public class WaitAnimationAction
         int maxTicks = action.getTicks() > 0 ? action.getTicks() : DEFAULT_MAX_TICKS;
         long timeoutMs = (long) maxTicks * MS_PER_TICK;
         long deadline = System.currentTimeMillis() + timeoutMs;
+        boolean checkCombat = !"ignore_combat".equalsIgnoreCase(action.getOption());
 
         // First, wait briefly for animation to start (if issued right after an interact)
         human.getTimingEngine().sleep(MS_PER_TICK);
@@ -37,8 +39,34 @@ public class WaitAnimationAction
         {
             try
             {
-                int animId = ClientThreadRunner.runOnClientThread(clientThread,
-                    () -> client.getLocalPlayer().getAnimation());
+                Object[] state = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    Player local = client.getLocalPlayer();
+                    if (local == null) return new Object[]{ AnimationID.IDLE, null };
+
+                    int anim = local.getAnimation();
+
+                    // Check if anything is attacking us
+                    for (NPC npc : client.getNpcs())
+                    {
+                        if (npc != null && npc.getInteracting() == local
+                            && npc.getCombatLevel() > 0)
+                        {
+                            return new Object[]{ anim, npc.getName() + " (lvl " + npc.getCombatLevel() + ")" };
+                        }
+                    }
+
+                    return new Object[]{ anim, null };
+                });
+
+                int animId = (int) state[0];
+                String attacker = (String) state[1];
+
+                // Combat interrupt — bail immediately (unless LLM opted out)
+                if (checkCombat && attacker != null)
+                {
+                    return ActionResult.failure(ActionType.WAIT_ANIMATION,
+                        "Under attack by " + attacker + "! Aborting wait.");
+                }
 
                 if (animId != AnimationID.IDLE)
                 {
@@ -48,11 +76,6 @@ public class WaitAnimationAction
                 {
                     // Was animating, now idle — animation completed
                     return ActionResult.success(ActionType.WAIT_ANIMATION, "Animation completed");
-                }
-                else
-                {
-                    // Never started animating — might be too late or instant action
-                    // Wait a bit more in case animation hasn't kicked in yet
                 }
             }
             catch (Throwable t)

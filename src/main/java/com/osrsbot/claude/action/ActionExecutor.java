@@ -106,7 +106,18 @@ public class ActionExecutor
             }
             sb.append(")");
             sb.append(" -> ");
-            sb.append(result.isSuccess() ? "OK" : "FAILED: " + result.getMessage());
+            if (result.isSuccess())
+            {
+                sb.append("OK");
+                if (result.getMessage() != null && !result.getMessage().isEmpty())
+                {
+                    sb.append(": ").append(result.getMessage());
+                }
+            }
+            else
+            {
+                sb.append("FAILED: ").append(result.getMessage());
+            }
             return sb.toString();
         }
     }
