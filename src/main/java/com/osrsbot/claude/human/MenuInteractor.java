@@ -2,7 +2,6 @@ package com.osrsbot.claude.human;
 
 import com.osrsbot.claude.util.ClientThreadRunner;
 import net.runelite.api.Client;
-import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.client.callback.ClientThread;
 
@@ -107,40 +106,15 @@ public class MenuInteractor
         }
 
         Point entryPos = (Point) entryData[0];
-        int param0 = (int) entryData[1];
-        int param1 = (int) entryData[2];
-        MenuAction menuAction = (MenuAction) entryData[3];
-        int identifier = (int) entryData[4];
         String matchedOption = (String) entryData[5];
-        String matchedTarget = (String) entryData[6];
 
-        // Move mouse visually toward the entry (for human appearance)
+        // Move mouse to the entry position, then left-click.
+        // We use a real pixel click because client.menuAction() does not work
+        // for CC_OP actions (bank widget interactions like Deposit/Withdraw).
+        System.out.println("[ClaudeBot] Menu: clicking '" + matchedOption + "' at (" + entryPos.x + "," + entryPos.y + ")");
         human.moveMouse(entryPos.x, entryPos.y);
         human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
-
-        // Fire the action via client API — reliable, no pixel-position dependency
-        System.out.println("[ClaudeBot] Menu: invoking " + matchedOption + " via menuAction"
-            + " (type=" + menuAction + " id=" + identifier + " p0=" + param0 + " p1=" + param1 + ")");
-
-        clientThread.invokeLater(() -> {
-            try
-            {
-                client.menuAction(
-                    param0,         // param0
-                    param1,         // param1
-                    menuAction,     // type
-                    identifier,     // identifier
-                    -1,             // itemId
-                    matchedOption,  // option
-                    matchedTarget   // target
-                );
-            }
-            catch (Throwable t)
-            {
-                System.err.println("[ClaudeBot] Menu menuAction FAILED on client thread: "
-                    + t.getClass().getName() + ": " + t.getMessage());
-            }
-        });
+        human.click();
 
         return true;
     }
@@ -202,18 +176,39 @@ public class MenuInteractor
     }
 
     /**
-     * Calculates the approximate screen position (center of row) for a menu entry.
-     * Used for visual mouse movement only — not relied upon for the actual action.
+     * Calculates the screen position (center of row) for a menu entry.
+     * Uses the menu's actual dimensions from the client API and derives
+     * the entry height dynamically, avoiding hardcoded pixel values that
+     * may be wrong with different client scaling/fonts.
      */
     private Point getEntryScreenPosition(Client client, int totalEntries, int entryIndex)
     {
         int menuX = client.getMenuX();
         int menuY = client.getMenuY();
         int menuWidth = client.getMenuWidth();
+        int menuHeight = client.getMenuHeight();
 
+        // Derive entry height from actual menu dimensions.
+        // menuHeight = header + (totalEntries * entryHeight) + padding
+        // We compute entryHeight dynamically so it adapts to scaling.
+        int entryHeight;
+        if (totalEntries > 0 && menuHeight > MENU_HEADER_HEIGHT)
+        {
+            entryHeight = (menuHeight - MENU_HEADER_HEIGHT) / totalEntries;
+        }
+        else
+        {
+            entryHeight = MENU_ENTRY_HEIGHT; // fallback
+        }
+
+        // entries[0] = Cancel (bottom), entries[n-1] = top of visual menu
         int visualRow = totalEntries - 1 - entryIndex;
-        int entryY = menuY + MENU_HEADER_HEIGHT + (visualRow * MENU_ENTRY_HEIGHT) + (MENU_ENTRY_HEIGHT / 2);
+        int entryY = menuY + MENU_HEADER_HEIGHT + (visualRow * entryHeight) + (entryHeight / 2);
         int entryX = menuX + (menuWidth / 2);
+
+        System.out.println("[ClaudeBot] Menu position: menuY=" + menuY + " menuH=" + menuHeight
+            + " entries=" + totalEntries + " entryH=" + entryHeight
+            + " visualRow=" + visualRow + " targetY=" + entryY);
 
         return new Point(entryX, entryY);
     }

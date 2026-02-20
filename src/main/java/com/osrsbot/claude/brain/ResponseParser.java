@@ -220,7 +220,7 @@ public class ResponseParser
                 if (obj.has("plane")) action.setPlane(safeInt(obj, "plane"));
                 else if (obj.has("z")) action.setPlane(safeInt(obj, "z"));
                 if (obj.has("ticks")) action.setTicks(safeInt(obj, "ticks"));
-                if (obj.has("quantity")) action.setQuantity(safeInt(obj, "quantity"));
+                if (obj.has("quantity")) action.setQuantity(safeQuantity(obj));
                 if (obj.has("item")) action.setItem(safeString(obj, "item"));
                 if (obj.has("item1")) action.setItem1(safeString(obj, "item1"));
                 if (obj.has("item2")) action.setItem2(safeString(obj, "item2"));
@@ -396,6 +396,20 @@ public class ResponseParser
             System.err.println("[ClaudeBot] Could not parse int for '" + key + "': " + obj.get(key));
             return 0;
         }
+    }
+
+    /**
+     * Parses quantity field with special handling for string values like "All", "all".
+     */
+    private static int safeQuantity(JsonObject obj)
+    {
+        try
+        {
+            String raw = obj.get("quantity").getAsString().trim().toLowerCase();
+            if ("all".equals(raw)) return -1;
+        }
+        catch (Exception ignored) {}
+        return safeInt(obj, "quantity");
     }
 
     /**

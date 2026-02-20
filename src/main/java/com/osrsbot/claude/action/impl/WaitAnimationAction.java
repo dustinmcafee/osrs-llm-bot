@@ -23,11 +23,15 @@ public class WaitAnimationAction
     private static final int DEFAULT_MAX_TICKS = 20;
     private static final int MS_PER_TICK = 600;
 
+    /** Max time to wait for an animation to START before giving up */
+    private static final int START_GRACE_TICKS = 3; // 1.8 seconds
+
     public static ActionResult execute(Client client, HumanSimulator human, ClientThread clientThread, BotAction action)
     {
         int maxTicks = action.getTicks() > 0 ? action.getTicks() : DEFAULT_MAX_TICKS;
         long timeoutMs = (long) maxTicks * MS_PER_TICK;
         long deadline = System.currentTimeMillis() + timeoutMs;
+        long startGraceDeadline = System.currentTimeMillis() + ((long) START_GRACE_TICKS * MS_PER_TICK);
         boolean checkCombat = !"ignore_combat".equalsIgnoreCase(action.getOption());
 
         // First, wait briefly for animation to start (if issued right after an interact)
@@ -77,6 +81,13 @@ public class WaitAnimationAction
                     // Was animating, now idle — animation completed
                     return ActionResult.success(ActionType.WAIT_ANIMATION, "Animation completed");
                 }
+                else if (System.currentTimeMillis() > startGraceDeadline)
+                {
+                    // Never started animating within the grace period — fail fast
+                    return ActionResult.failure(ActionType.WAIT_ANIMATION,
+                        "Player never started animating (waited " + START_GRACE_TICKS + " ticks). "
+                        + "The preceding action may have failed or the target may be unavailable.");
+                }
             }
             catch (Throwable t)
             {
@@ -90,6 +101,7 @@ public class WaitAnimationAction
         {
             return ActionResult.success(ActionType.WAIT_ANIMATION, "Timeout after " + maxTicks + " ticks (was still animating)");
         }
-        return ActionResult.success(ActionType.WAIT_ANIMATION, "No animation detected within " + maxTicks + " ticks");
+        return ActionResult.failure(ActionType.WAIT_ANIMATION,
+            "No animation detected within " + maxTicks + " ticks — the action likely failed.");
     }
 }
