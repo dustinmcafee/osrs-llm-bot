@@ -16,6 +16,15 @@ public class UseItemOnObjectAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ObjectUtils objectUtils, ClientThread clientThread, BotAction action)
     {
+        if (action.getItem() == null || action.getItem().isEmpty())
+        {
+            return ActionResult.failure(ActionType.USE_ITEM_ON_OBJECT, "No item name specified");
+        }
+        if (action.getObject() == null || action.getObject().isEmpty())
+        {
+            return ActionResult.failure(ActionType.USE_ITEM_ON_OBJECT, "No object name specified");
+        }
+
         // Phase 1: Lookup on client thread (blocks background thread until complete)
         // Widget APIs, Object APIs, and ItemManager all may require the client thread.
         Object[] lookupData;

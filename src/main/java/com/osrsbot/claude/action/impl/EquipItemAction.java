@@ -20,6 +20,11 @@ public class EquipItemAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
+        if (action.getName() == null || action.getName().isEmpty())
+        {
+            return ActionResult.failure(ActionType.EQUIP_ITEM, "No item name specified");
+        }
+
         // Phase 1: Find item widget on client thread
         Object[] lookupData;
         try

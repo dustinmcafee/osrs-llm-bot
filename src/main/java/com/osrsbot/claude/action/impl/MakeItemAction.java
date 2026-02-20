@@ -25,8 +25,19 @@ import java.awt.Rectangle;
  */
 public class MakeItemAction
 {
-    // Widget groups for various make interfaces
-    private static final int[] MAKE_GROUPS = { 270, 312, 446 };
+    // Widget groups for all known make/craft interfaces
+    private static final int[] MAKE_GROUPS = {
+        270, // SKILLMULTI — universal make interface (cook, smelt, spin, fletch, glass, pottery, loom, herblore, leather, gems)
+        312, // SMITHING — anvil interface
+        446, // CRAFTING_GOLD — gold jewelry at furnace
+        6,   // SILVER_CRAFTING — silver jewelry at furnace
+        324, // TANNER — tanning hides interface
+        403, // TELETABS_CRAFT_IF — magic tablet creation at lectern
+        140, // GRAPHICAL_MULTI — older 2-choice graphical dialog
+        458, // POH_FURNITURE_CREATION — construction build list
+        397, // POH_FURNITURE_CREATION_MENU — construction scrollable build/remove menu
+        930, // FLETCHING_TABLE — newer fletching table interface
+    };
 
     public static ActionResult execute(Client client, HumanSimulator human, ItemManager itemManager,
                                        ClientThread clientThread, BotAction action)

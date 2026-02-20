@@ -16,6 +16,11 @@ public class DropItemAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
+        if (action.getName() == null || action.getName().isEmpty())
+        {
+            return ActionResult.failure(ActionType.DROP_ITEM, "No item name specified");
+        }
+
         // Phase 1: Widget lookup on client thread
         java.awt.Point point;
         try

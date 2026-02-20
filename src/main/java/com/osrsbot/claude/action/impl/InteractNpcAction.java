@@ -15,6 +15,15 @@ public class InteractNpcAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, NpcUtils npcUtils, ClientThread clientThread, BotAction action)
     {
+        if (action.getName() == null || action.getName().isEmpty())
+        {
+            return ActionResult.failure(ActionType.INTERACT_NPC, "No NPC name specified");
+        }
+        if (action.getOption() == null || action.getOption().isEmpty())
+        {
+            return ActionResult.failure(ActionType.INTERACT_NPC, "No option specified for NPC: " + action.getName());
+        }
+
         // Phase 1: Lookup on client thread (blocks background thread until complete)
         // All NPC API calls (getName, getIndex, getWorldLocation, etc.) require the client thread.
         Object[] lookupData;

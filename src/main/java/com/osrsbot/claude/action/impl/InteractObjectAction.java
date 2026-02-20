@@ -15,6 +15,15 @@ public class InteractObjectAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, ObjectUtils objectUtils, ClientThread clientThread, BotAction action)
     {
+        if (action.getName() == null || action.getName().isEmpty())
+        {
+            return ActionResult.failure(ActionType.INTERACT_OBJECT, "No object name specified");
+        }
+        if (action.getOption() == null || action.getOption().isEmpty())
+        {
+            return ActionResult.failure(ActionType.INTERACT_OBJECT, "No option specified for object: " + action.getName());
+        }
+
         // Phase 1: Lookup on client thread (blocks background thread until complete)
         // Object API calls (getObjectDefinition, getLocalLocation, getClickbox, etc.) require the client thread.
         Object[] lookupData;

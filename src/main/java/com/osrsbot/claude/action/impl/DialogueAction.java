@@ -14,21 +14,9 @@ public class DialogueAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, ClientThread clientThread, BotAction action)
     {
-        // The AI sends the option number in the "option" field (parsed as a String)
-        int optionIndex = 1;
-        try
-        {
-            String opt = action.getOption();
-            if (opt != null && !opt.isEmpty())
-            {
-                optionIndex = Integer.parseInt(opt);
-            }
-        }
-        catch (NumberFormatException ignored) {}
-        if (optionIndex < 1) optionIndex = 1;
-        final int idx = optionIndex;
+        String opt = action.getOption();
 
-        // Phase 1: Widget lookup on client thread
+        // Phase 1: Widget lookup on client thread — support both numeric index and text match
         Object[] lookupData;
         try
         {
@@ -38,15 +26,58 @@ public class DialogueAction
 
                 Widget[] children = options.getChildren();
                 if (children == null || children.length == 0) return new Object[]{ "NO_CHILDREN" };
-                // Options are 1-indexed and map directly to children[] indices
-                // (child 0 is the title "Select an Option", real options start at child 1)
-                if (idx < 1 || idx >= children.length) return new Object[]{ "OUT_OF_RANGE" };
 
-                Widget target = children[idx];
-                java.awt.Rectangle bounds = target.getBounds();
-                if (bounds == null) return new Object[]{ "NO_BOUNDS" };
+                // Try numeric index first
+                if (opt != null && !opt.isEmpty())
+                {
+                    try
+                    {
+                        int idx = Integer.parseInt(opt.trim());
+                        if (idx >= 1 && idx < children.length)
+                        {
+                            Widget target = children[idx];
+                            java.awt.Rectangle bounds = target.getBounds();
+                            if (bounds != null)
+                            {
+                                return new Object[]{ "OK", new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY()) };
+                            }
+                        }
+                    }
+                    catch (NumberFormatException ignored) {}
 
-                return new Object[]{ "OK", new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY()) };
+                    // Text match: search option text (case-insensitive, partial match)
+                    String lowerOpt = opt.toLowerCase().trim();
+                    for (int i = 1; i < children.length; i++)
+                    {
+                        Widget child = children[i];
+                        if (child == null || child.isHidden()) continue;
+                        String text = child.getText();
+                        if (text != null)
+                        {
+                            String stripped = text.replaceAll("<[^>]+>", "").trim().toLowerCase();
+                            if (stripped.contains(lowerOpt) || lowerOpt.contains(stripped))
+                            {
+                                java.awt.Rectangle bounds = child.getBounds();
+                                if (bounds != null)
+                                {
+                                    return new Object[]{ "OK", new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY()) };
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Default: click first option
+                if (children.length > 1)
+                {
+                    java.awt.Rectangle bounds = children[1].getBounds();
+                    if (bounds != null)
+                    {
+                        return new Object[]{ "OK", new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY()) };
+                    }
+                }
+
+                return new Object[]{ "NO_MATCH" };
             });
         }
         catch (Throwable t)
@@ -58,7 +89,7 @@ public class DialogueAction
         String status = (String) lookupData[0];
         if (!"OK".equals(status))
         {
-            return ActionResult.failure(ActionType.SELECT_DIALOGUE, "Dialogue: " + status);
+            return ActionResult.failure(ActionType.SELECT_DIALOGUE, "Dialogue: " + status + " (option='" + opt + "')");
         }
 
         // Phase 2: Click on background thread
@@ -67,31 +98,67 @@ public class DialogueAction
         return ActionResult.success(ActionType.SELECT_DIALOGUE);
     }
 
+    // All dialog widget groups that have a "Click here to continue" button
+    // Each entry: {groupId, childId} — we try them all until one works
+    private static final int[][] CONTINUE_WIDGETS = {
+        {231, 5},  // CHAT_LEFT — NPC dialogue
+        {217, 5},  // CHAT_RIGHT — Player dialogue
+        {60, 5},   // CHAT_BOTH — Both heads dialogue
+        {229, 2},  // MESSAGEBOX — Plain text message
+        {193, 2},  // OBJECTBOX — Sprite/item dialog ("You receive...")
+        {11, 2},   // OBJECTBOX_DOUBLE — Double sprite dialog
+        {220, 3},  // MESSAGESCROLL — Scrollable quest text / signs / books
+        {221, 3},  // MESSAGESCROLL2 — Secondary message scroll
+        {222, 3},  // MESSAGESCROLL_HANDWRITING — Quest letters/notes
+    };
+
     public static ActionResult executeContinue(Client client, HumanSimulator human, ClientThread clientThread)
     {
-        // Phase 1: Widget lookup on client thread
+        // Phase 1: Search ALL dialog types for a continue button
         java.awt.Point point;
         try
         {
             point = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                // NPC dialogue continue button
-                Widget continueWidget = client.getWidget(231, 5);
-                if (continueWidget == null || continueWidget.isHidden())
+                for (int[] widgetDef : CONTINUE_WIDGETS)
                 {
-                    // Player dialogue continue button
-                    continueWidget = client.getWidget(217, 5);
+                    Widget w = client.getWidget(widgetDef[0], widgetDef[1]);
+                    if (w != null && !w.isHidden())
+                    {
+                        java.awt.Rectangle bounds = w.getBounds();
+                        if (bounds != null && bounds.width > 0)
+                        {
+                            return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                        }
+                    }
                 }
-                if (continueWidget == null || continueWidget.isHidden()) return null;
-
-                java.awt.Rectangle bounds = continueWidget.getBounds();
-                if (bounds == null) return null;
-                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                // Also search for any widget with "Click here to continue" text/action
+                for (int[] widgetDef : CONTINUE_WIDGETS)
+                {
+                    Widget root = client.getWidget(widgetDef[0], 0);
+                    if (root == null || root.isHidden()) continue;
+                    // Search children for continue text
+                    for (int childIdx = 0; childIdx < 10; childIdx++)
+                    {
+                        Widget child = client.getWidget(widgetDef[0], childIdx);
+                        if (child == null || child.isHidden()) continue;
+                        String text = child.getText();
+                        if (text != null && text.toLowerCase().contains("click here to continue"))
+                        {
+                            java.awt.Rectangle bounds = child.getBounds();
+                            if (bounds != null && bounds.width > 0)
+                            {
+                                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                            }
+                        }
+                    }
+                }
+                return null;
             });
         }
         catch (Throwable t)
         {
             System.err.println("[ClaudeBot] Continue dialogue lookup failed: " + t.getMessage());
-            // Fallback: press space
+            // Fallback: press space (advances most OSRS dialogs)
             human.pressKey(java.awt.event.KeyEvent.VK_SPACE);
             return ActionResult.success(ActionType.CONTINUE_DIALOGUE);
         }
@@ -103,6 +170,7 @@ public class DialogueAction
         }
         else
         {
+            // Space bar fallback — works for most dialogs
             human.pressKey(java.awt.event.KeyEvent.VK_SPACE);
         }
         return ActionResult.success(ActionType.CONTINUE_DIALOGUE);

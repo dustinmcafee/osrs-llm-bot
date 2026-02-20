@@ -14,6 +14,15 @@ public class UseItemOnItemAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
+        if (action.getItem1() == null || action.getItem1().isEmpty())
+        {
+            return ActionResult.failure(ActionType.USE_ITEM_ON_ITEM, "No item1 name specified");
+        }
+        if (action.getItem2() == null || action.getItem2().isEmpty())
+        {
+            return ActionResult.failure(ActionType.USE_ITEM_ON_ITEM, "No item2 name specified");
+        }
+
         // Phase 1: Widget lookups on client thread
         Object[] lookupData;
         try

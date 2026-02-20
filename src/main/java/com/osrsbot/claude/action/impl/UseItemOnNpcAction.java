@@ -16,6 +16,15 @@ public class UseItemOnNpcAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, NpcUtils npcUtils, ClientThread clientThread, BotAction action)
     {
+        if (action.getItem() == null || action.getItem().isEmpty())
+        {
+            return ActionResult.failure(ActionType.USE_ITEM_ON_NPC, "No item name specified");
+        }
+        if (action.getNpc() == null || action.getNpc().isEmpty())
+        {
+            return ActionResult.failure(ActionType.USE_ITEM_ON_NPC, "No NPC name specified");
+        }
+
         // Phase 1: Lookup on client thread (blocks background thread until complete)
         // Widget APIs, NPC APIs, and ItemManager all may require the client thread.
         Object[] lookupData;

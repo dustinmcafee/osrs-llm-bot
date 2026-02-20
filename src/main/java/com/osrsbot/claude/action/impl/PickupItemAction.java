@@ -17,6 +17,11 @@ public class PickupItemAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, TileUtils tileUtils, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
+        if (action.getName() == null || action.getName().isEmpty())
+        {
+            return ActionResult.failure(ActionType.PICKUP_ITEM, "No item name specified");
+        }
+
         // Phase 1: Lookup on client thread (blocks background thread until complete)
         // Scene/tile/item API calls require the client thread.
         Object[] lookupData;

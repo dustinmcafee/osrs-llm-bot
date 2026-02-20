@@ -14,6 +14,11 @@ public class EatFoodAction
 {
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
+        if (action.getName() == null || action.getName().isEmpty())
+        {
+            return ActionResult.failure(ActionType.EAT_FOOD, "No food name specified");
+        }
+
         // Phase 1: Widget lookup on client thread
         java.awt.Point point;
         try
