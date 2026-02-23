@@ -25,7 +25,7 @@ public class GameStateSerializer
     {
         StringBuilder sb = new StringBuilder();
 
-        serializePlayer(sb, snapshot.getPlayer());
+        serializePlayer(sb, snapshot.getPlayer(), snapshot.getEnvironment());
         serializeInventory(sb, snapshot.getInventory());
         serializeEquipment(sb, snapshot.getEquipment());
         serializeNearby(sb, "NEARBY_NPCS", snapshot.getNearbyNpcs());
@@ -37,7 +37,7 @@ public class GameStateSerializer
         return sb.toString();
     }
 
-    private void serializePlayer(StringBuilder sb, PlayerState p)
+    private void serializePlayer(StringBuilder sb, PlayerState p, EnvironmentState env)
     {
         sb.append("[PLAYER] ").append(p.getName())
             .append(" | Combat:").append(p.getCombatLevel())
@@ -50,11 +50,17 @@ public class GameStateSerializer
             .append(" | Pos:(").append(p.getWorldX()).append(",").append(p.getWorldY()).append(",").append(p.getPlane()).append(")")
             .append("\n");
 
+        // Suppress STUCK when an interface is open — the player successfully interacted
+        // with the furnace/bank/shop/etc. and the "intended destination" is just a stale
+        // walk target from clicking the object.
+        boolean interfaceOpen = env != null && (env.isBankOpen() || env.isShopOpen()
+            || env.isMakeInterfaceOpen() || env.isGrandExchangeOpen());
+
         sb.append("[STATUS] ");
         if (p.isIdle())
         {
             boolean hasDestination = p.getDestinationX() != 0 || p.getDestinationY() != 0;
-            if (p.getStuckTicks() >= 4 && hasDestination)
+            if (p.getStuckTicks() >= 4 && hasDestination && !interfaceOpen)
             {
                 sb.append("STUCK(").append(p.getStuckTicks()).append(" ticks)");
                 sb.append(" intended_dest:(").append(p.getDestinationX())

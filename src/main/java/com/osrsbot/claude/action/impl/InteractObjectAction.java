@@ -3,6 +3,7 @@ package com.osrsbot.claude.action.impl;
 import com.osrsbot.claude.action.ActionResult;
 import com.osrsbot.claude.action.ActionType;
 import com.osrsbot.claude.action.BotAction;
+import com.osrsbot.claude.action.LastInteractedObject;
 import com.osrsbot.claude.human.HumanSimulator;
 import com.osrsbot.claude.util.ClientThreadRunner;
 import com.osrsbot.claude.util.ObjectUtils;
@@ -83,7 +84,10 @@ public class InteractObjectAction
                     screenPoint = new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
                 }
 
-                return new Object[]{ sceneX, sceneY, objId, actionIndex, menuAction, screenPoint };
+                net.runelite.api.coords.WorldPoint objWorld =
+                    net.runelite.api.coords.WorldPoint.fromLocal(client, obj.getLocalLocation());
+
+                return new Object[]{ sceneX, sceneY, objId, actionIndex, menuAction, screenPoint, objWorld };
             });
         }
         catch (Throwable t)
@@ -103,6 +107,13 @@ public class InteractObjectAction
         int actionIndex = (int) lookupData[3];
         MenuAction menuAction = (MenuAction) lookupData[4];
         java.awt.Point screenPoint = (java.awt.Point) lookupData[5];
+        net.runelite.api.coords.WorldPoint objWorld = (net.runelite.api.coords.WorldPoint) lookupData[6];
+
+        // Store for WaitAnimationAction to detect object depletion (e.g. rock mined by another player)
+        if (objWorld != null)
+        {
+            LastInteractedObject.set(objId, objWorld.getX(), objWorld.getY(), objWorld.getPlane());
+        }
 
         if (actionIndex < 0)
         {

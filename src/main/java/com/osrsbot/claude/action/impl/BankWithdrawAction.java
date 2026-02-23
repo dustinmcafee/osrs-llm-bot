@@ -32,7 +32,10 @@ public class BankWithdrawAction
     private static final int BANK_SEARCH_GROUP = 12;
     private static final int BANK_SEARCH_CHILD = 36;
 
-    public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
+    private static final int COINS_ITEM_ID = 995;
+
+    public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils,
+                                       ClientThread clientThread, BotAction action, int minGoldReserve)
     {
         // Resolve item name: Claude may send it as "item" or "name"
         String itemName = action.getItem() != null ? action.getItem() : action.getName();
@@ -45,6 +48,27 @@ public class BankWithdrawAction
         if (!waitForBankOpen(client, clientThread, human))
         {
             return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: bank not open for " + itemName);
+        }
+
+        // Gold reserve check: prevent withdrawing coins when bank balance is at or below the floor
+        if (minGoldReserve > 0 && itemName.equalsIgnoreCase("Coins"))
+        {
+            try
+            {
+                int bankCoins = ClientThreadRunner.runOnClientThread(clientThread,
+                    () -> countCoinsInBank(client));
+                if (bankCoins <= minGoldReserve)
+                {
+                    return ActionResult.failure(ActionType.BANK_WITHDRAW,
+                        "Cannot withdraw Coins — bank has " + bankCoins + " gp which is at or below "
+                        + "the minimum reserve of " + minGoldReserve + " gp. "
+                        + "Earn more gold through other means (combat loot, selling items, skilling).");
+                }
+            }
+            catch (Throwable t)
+            {
+                System.err.println("[ClaudeBot] BankWithdraw: gold reserve check failed: " + t.getMessage());
+            }
         }
 
         // Let bank UI fully render before interacting with widgets
@@ -105,7 +129,11 @@ public class BankWithdrawAction
             return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: " + status + " for " + itemName);
         }
 
-        System.out.println("[ClaudeBot] BankWithdraw: searching for '" + itemName + "'");
+        // Phase 2a: Search for the item
+        int qty = action.getQuantity();
+        if (qty == 0) qty = 1; // Default to 1 when no quantity specified
+
+        System.out.println("[ClaudeBot] BankWithdraw: searching for '" + itemName + "' qty=" + qty);
 
         // Click the search button, retry if search input doesn't activate
         boolean searchActivated = false;
@@ -141,13 +169,11 @@ public class BankWithdrawAction
 
         if (!searchActivated)
         {
-            // Don't press Escape — it would close the bank. Just return failure.
             return ActionResult.failure(ActionType.BANK_WITHDRAW,
                 "Bank withdraw: search bar did not activate for " + itemName);
         }
 
         // Clear any stale search text from a previous search in this batch
-        // (bank search re-opens with old text still in the input)
         for (int i = 0; i < 20; i++)
         {
             human.pressKey(KeyEvent.VK_BACK_SPACE);
@@ -160,7 +186,6 @@ public class BankWithdrawAction
         java.awt.Point itemPoint = waitForSearchResult(client, clientThread, itemUtils, itemName, human);
         if (itemPoint == null)
         {
-            // Click search button to toggle search off (Escape would close the bank)
             closeSearch(client, human, clientThread);
             return ActionResult.failure(ActionType.BANK_WITHDRAW,
                 "Bank withdraw: item not found after search for " + itemName);
@@ -170,67 +195,56 @@ public class BankWithdrawAction
         // Let bank search results fully render before interacting
         human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
 
-        // Phase 2: Set the bank quantity mode, then left-click the item.
-        // We use the bank's quantity selector buttons (widget group 12) to set the
-        // default withdraw amount, then left-click. This avoids the right-click menu
-        // entirely — client.menuAction() with CC_OP doesn't work for bank widgets,
-        // and pixel-clicking inside right-click menus is fragile.
-        int qty = action.getQuantity();
-        if (qty == 0) qty = 1; // Default to 1 when no quantity specified
-        boolean needsTyping = isCustomQuantity(qty);
+        // Phase 2b: Set quantity mode and click the item to withdraw.
+        // For standard amounts (1, 5, 10, All) we click the mode button once then the item.
+        // For custom amounts (e.g. 14, 22) we decompose into standard amounts and click
+        // the item multiple times, avoiding the unreliable Withdraw-X dialog entirely.
+        // Item position stays stable during search mode since bank slots don't shift.
+        boolean needsDecomposition = isCustomQuantity(qty);
 
-        // Bank quantity button child IDs (group 12)
-        int qtyButtonChild = getQuantityButtonChild(qty);
-
-        System.out.println("[ClaudeBot] BankWithdraw: qty=" + qty + " button=child(" + qtyButtonChild + ") for '" + itemName + "'");
-
-        // Click the quantity selector button if not already set to the right mode
-        try
+        if (!needsDecomposition)
         {
-            java.awt.Point qtyBtnPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                Widget qtyBtn = client.getWidget(BANK_SEARCH_GROUP, qtyButtonChild);
-                if (qtyBtn == null || qtyBtn.isHidden()) return null;
-                java.awt.Rectangle bounds = qtyBtn.getBounds();
-                if (bounds == null) return null;
-                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
-            });
-
-            if (qtyBtnPoint != null)
+            // Standard quantity: one mode click + one item click
+            int qtyButtonChild = getQuantityButtonChild(qty);
+            clickQuantityButton(client, human, clientThread, qtyButtonChild);
+            human.moveAndClick(itemPoint.x, itemPoint.y);
+        }
+        else
+        {
+            // Custom quantity: decompose into 10s, 5s, and 1s
+            System.out.println("[ClaudeBot] BankWithdraw: decomposing qty=" + qty + " into standard amounts");
+            int remaining = qty;
+            // Withdraw-10 passes
+            if (remaining >= 10)
             {
-                human.moveAndClick(qtyBtnPoint.x, qtyBtnPoint.y);
-                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
-
-                // For Withdraw-X, a chatbox input dialog appears — type the quantity
-                if (needsTyping)
+                clickQuantityButton(client, human, clientThread, 27); // child 27 = "10"
+                while (remaining >= 10)
                 {
-                    if (!waitForSearchActive(client, clientThread, human))
-                    {
-                        System.err.println("[ClaudeBot] BankWithdraw: Withdraw-X input dialog did not appear");
-                        closeSearch(client, human, clientThread);
-                        return ActionResult.failure(ActionType.BANK_WITHDRAW,
-                            "Withdraw-X dialog did not appear for " + itemName);
-                    }
-                    human.typeText(String.valueOf(qty));
-                    human.pressKey(KeyEvent.VK_ENTER);
+                    human.moveAndClick(itemPoint.x, itemPoint.y);
                     human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+                    remaining -= 10;
                 }
             }
-            else
+            // Withdraw-5 pass
+            if (remaining >= 5)
             {
-                System.err.println("[ClaudeBot] BankWithdraw: quantity button not found (child=" + qtyButtonChild + ")");
+                clickQuantityButton(client, human, clientThread, 25); // child 25 = "5"
+                human.moveAndClick(itemPoint.x, itemPoint.y);
+                human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+                remaining -= 5;
+            }
+            // Withdraw-1 passes
+            if (remaining > 0)
+            {
+                clickQuantityButton(client, human, clientThread, 23); // child 23 = "1"
+                while (remaining > 0)
+                {
+                    human.moveAndClick(itemPoint.x, itemPoint.y);
+                    if (remaining > 1) human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+                    remaining--;
+                }
             }
         }
-        catch (Throwable t)
-        {
-            System.err.println("[ClaudeBot] BankWithdraw: quantity button click failed: " + t.getMessage());
-        }
-
-        // Re-find the item position (bank may have re-rendered after quantity button click)
-        java.awt.Point freshItemPoint = waitForSearchResult(client, clientThread, itemUtils, itemName, human);
-        if (freshItemPoint == null) freshItemPoint = itemPoint; // fall back to original
-
-        // Left-click the item to withdraw
-        human.moveAndClick(freshItemPoint.x, freshItemPoint.y);
 
         // Wait one tick for the game to process the withdrawal
         human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
@@ -436,6 +450,58 @@ public class BankWithdrawAction
             human.getTimingEngine().sleep(VERIFY_POLL_MS);
         }
         return false;
+    }
+
+    /**
+     * Clicks a bank quantity selector button (1/5/10/All).
+     * Widget group 12, child IDs: 23=1, 25=5, 27=10, 29=X, 31=All
+     */
+    private static void clickQuantityButton(Client client, HumanSimulator human,
+                                             ClientThread clientThread, int childId)
+    {
+        try
+        {
+            java.awt.Point btn = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Widget qtyBtn = client.getWidget(BANK_SEARCH_GROUP, childId);
+                if (qtyBtn == null || qtyBtn.isHidden()) return null;
+                java.awt.Rectangle bounds = qtyBtn.getBounds();
+                if (bounds == null) return null;
+                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+            });
+            if (btn != null)
+            {
+                human.moveAndClick(btn.x, btn.y);
+                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+            }
+            else
+            {
+                System.err.println("[ClaudeBot] BankWithdraw: quantity button not found (child=" + childId + ")");
+            }
+        }
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] BankWithdraw: quantity button click failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Counts coins (item ID 995) in the bank container.
+     * Must be called on the client thread.
+     */
+    private static int countCoinsInBank(Client client)
+    {
+        net.runelite.api.ItemContainer bank = client.getItemContainer(InventoryID.BANK);
+        if (bank == null) return 0;
+        net.runelite.api.Item[] items = bank.getItems();
+        if (items == null) return 0;
+        for (net.runelite.api.Item item : items)
+        {
+            if (item.getId() == COINS_ITEM_ID)
+            {
+                return item.getQuantity();
+            }
+        }
+        return 0;
     }
 
     /**

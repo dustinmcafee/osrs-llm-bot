@@ -23,6 +23,9 @@ public class ResponseParser
     // Parse errors from the most recent parse, fed back to the LLM
     private final List<String> parseErrors = new ArrayList<>();
 
+    // Tracks consecutive all-WAIT responses to detect idle loops
+    private int consecutiveWaitCount = 0;
+
     /**
      * Maps common LLM-invented action names to real ActionTypes + default options.
      * Small local models often use natural-language names instead of our exact enum values.
@@ -60,6 +63,42 @@ public class ResponseParser
         alias("TALK_TO", ActionType.INTERACT_NPC, "Talk-to");
         alias("TRADE", ActionType.INTERACT_NPC, "Trade");
         alias("PICKPOCKET", ActionType.INTERACT_NPC, "Pickpocket");
+
+        // Smelting / crafting → MAKE_ITEM (for when the make interface is already open)
+        alias("CRAFT_ITEM", ActionType.MAKE_ITEM, null);
+        alias("MAKE", ActionType.MAKE_ITEM, null);
+        alias("SMELT_ITEM", ActionType.MAKE_ITEM, null);
+        alias("CRAFT", ActionType.MAKE_ITEM, null);
+        alias("COOK_ITEM", ActionType.MAKE_ITEM, null);
+        alias("SMELT_BRONZE", ActionType.MAKE_ITEM, null, "Bronze bar");
+        alias("SMELT_IRON", ActionType.MAKE_ITEM, null, "Iron bar");
+        alias("SMELT_STEEL", ActionType.MAKE_ITEM, null, "Steel bar");
+        alias("SMELT_GOLD", ActionType.MAKE_ITEM, null, "Gold bar");
+        alias("SMELT_MITHRIL", ActionType.MAKE_ITEM, null, "Mithril bar");
+        alias("SMELT_ADAMANT", ActionType.MAKE_ITEM, null, "Adamantite bar");
+        alias("SMELT_RUNE", ActionType.MAKE_ITEM, null, "Runite bar");
+
+        // Magic / spellcasting → CAST_SPELL
+        alias("CAST", ActionType.CAST_SPELL, null);
+        alias("ALCH", ActionType.CAST_SPELL, null, "High Level Alchemy");
+        alias("HIGH_ALCH", ActionType.CAST_SPELL, null, "High Level Alchemy");
+        alias("HIGH_ALCHEMY", ActionType.CAST_SPELL, null, "High Level Alchemy");
+        alias("LOW_ALCH", ActionType.CAST_SPELL, null, "Low Level Alchemy");
+        alias("TELEPORT", ActionType.CAST_SPELL, null);
+        alias("SUPERHEAT", ActionType.CAST_SPELL, null, "Superheat Item");
+        alias("SUPERHEAT_ITEM", ActionType.CAST_SPELL, null, "Superheat Item");
+        alias("TELEGRAB", ActionType.CAST_SPELL, null, "Telekinetic Grab");
+        alias("BONES_TO_BANANAS", ActionType.CAST_SPELL, null, "Bones to Bananas");
+        alias("FIRE_STRIKE", ActionType.CAST_SPELL, null, "Fire Strike");
+        alias("WIND_STRIKE", ActionType.CAST_SPELL, null, "Wind Strike");
+
+        // Prayer
+        alias("PRAY", ActionType.TOGGLE_PRAYER, null);
+        alias("PRAYER", ActionType.TOGGLE_PRAYER, null);
+        alias("PROTECT_MELEE", ActionType.TOGGLE_PRAYER, null, "Protect from Melee");
+        alias("PROTECT_RANGE", ActionType.TOGGLE_PRAYER, null, "Protect from Missiles");
+        alias("PROTECT_MAGIC", ActionType.TOGGLE_PRAYER, null, "Protect from Magic");
+        alias("PROTECT_MISSILES", ActionType.TOGGLE_PRAYER, null, "Protect from Missiles");
 
         // Shorthand aliases
         alias("EAT", ActionType.EAT_FOOD, null);
@@ -220,9 +259,12 @@ public class ResponseParser
                             else
                             {
                                 String err = "PARSE_ERROR: Unknown action \"" + actionEl.getAsString()
-                                    + "\" in " + obj + ". Valid actions: INTERACT_OBJECT, INTERACT_NPC, PATH_TO, EAT_FOOD, PICKUP_ITEM, etc. "
-                                    + "Use \"name\" for the target name and \"option\" for the verb (e.g. Mine, Attack, Pick). "
-                                    + "Do NOT put the verb in the \"action\" field.";
+                                    + "\" in " + obj + ". Valid actions: INTERACT_OBJECT, INTERACT_NPC, PATH_TO, "
+                                    + "MAKE_ITEM, EAT_FOOD, PICKUP_ITEM, DROP_ITEM, EQUIP_ITEM, "
+                                    + "BANK_WITHDRAW, BANK_DEPOSIT, BANK_CLOSE, WAIT, WAIT_ANIMATION, "
+                                    + "USE_ITEM_ON_OBJECT, PRESS_KEY, CAST_SPELL, TOGGLE_RUN. "
+                                    + "For smelting/cooking: use INTERACT_OBJECT(Furnace/Range) to open interface, then MAKE_ITEM to select what to make. "
+                                    + "Use \"name\" for the target and \"option\" for the verb (e.g. Mine, Attack, Pick).";
                                 System.err.println("[ClaudeBot] " + err);
                                 parseErrors.add(err);
                                 continue;
@@ -265,6 +307,30 @@ public class ResponseParser
                     }
                 }
 
+                // For CAST_SPELL aliases with a built-in spell name (e.g. ALCH → "High Level Alchemy"):
+                // If the LLM put the target in "name" instead of "item"/"npc", auto-correct.
+                // Example: {"action":"ALCH","name":"Gold bracelet"} → name="High Level Alchemy", item="Gold bracelet"
+                // Example: {"action":"FIRE_STRIKE","name":"Goblin"} → name="Fire Strike", npc="Goblin"
+                if (resolvedAlias != null && type == ActionType.CAST_SPELL
+                    && resolvedAlias.defaultName != null
+                    && action.getName() != null
+                    && !action.getName().equalsIgnoreCase(resolvedAlias.defaultName))
+                {
+                    String target = action.getName();
+                    action.setName(resolvedAlias.defaultName);
+                    // Route target to item (alchemy/superheat) or npc (combat spells)
+                    if (isItemTargetSpell(resolvedAlias.defaultName))
+                    {
+                        if (action.getItem() == null) action.setItem(target);
+                    }
+                    else
+                    {
+                        if (action.getNpc() == null) action.setNpc(target);
+                    }
+                    System.out.println("[ClaudeBot] Auto-fixed " + resolvedAlias.defaultName
+                        + ": moved target \"" + target + "\" from \"name\" to correct field");
+                }
+
                 // Auto-correct action type when fields don't match the parsed type.
                 // LLMs frequently confuse integer IDs (e.g. 14 for 19, 4 for 38).
                 ActionType corrected = inferCorrectType(type, action, obj);
@@ -287,6 +353,14 @@ public class ResponseParser
                     String fix = "Auto-fixed: used \"object\" field as \"name\" for INTERACT_OBJECT. Use \"name\" next time.";
                     System.out.println("[ClaudeBot] " + fix);
                     if (action.getParseWarning() == null) action.setParseWarning(fix);
+                }
+
+                // Auto-recover "item" field → "name" for MAKE_ITEM
+                if (action.getName() == null && action.getItem() != null
+                    && (type == ActionType.MAKE_ITEM))
+                {
+                    action.setName(action.getItem());
+                    System.out.println("[ClaudeBot] Auto-fixed: used \"item\" field as \"name\" for MAKE_ITEM.");
                 }
 
                 // Validate required fields for key action types
@@ -320,6 +394,56 @@ public class ResponseParser
             actions.add(wait);
         }
 
+        // Reject "task complete" goals — small models declare victory and idle forever.
+        // But allow verb-initial goals like "Complete Cook's Assistant quest" or "Finish mining".
+        if (lastGoal != null)
+        {
+            String lowerGoal = lastGoal.toLowerCase().trim();
+            boolean isTerminalGoal = lowerGoal.contains("nothing to do")
+                || lowerGoal.contains("nothing left")
+                || lowerGoal.contains("no more tasks")
+                || lowerGoal.contains("no more work");
+            if (!isTerminalGoal
+                && (lowerGoal.contains("complete") || lowerGoal.contains("done")
+                    || lowerGoal.contains("finished") || lowerGoal.contains("accomplished"))
+                && !lowerGoal.startsWith("complete") && !lowerGoal.startsWith("finish"))
+            {
+                // "complete"/"done"/"finished" NOT at start → adjective/past-participle usage
+                // e.g. "Task complete", "Session done", "All finished" → terminal
+                isTerminalGoal = true;
+            }
+            if (isTerminalGoal)
+            {
+                System.out.println("[ClaudeBot] GOAL REJECTED: \"" + lastGoal + "\"");
+                parseErrors.add("GOAL_REJECTED: \"" + lastGoal + "\" — You CANNOT declare tasks complete. "
+                    + "Rule 18: NEVER stop working. Find a new productive task: "
+                    + "train a skill, complete a quest, explore a new area, earn gold, or upgrade equipment.");
+                lastGoal = null;
+            }
+        }
+
+        // Detect idle loops: 3+ consecutive all-WAIT responses
+        boolean allWaits = !actions.isEmpty()
+            && actions.stream().allMatch(a -> a.getType() == ActionType.WAIT);
+        if (allWaits)
+        {
+            consecutiveWaitCount++;
+            if (consecutiveWaitCount >= 3)
+            {
+                System.out.println("[ClaudeBot] IDLE LOOP DETECTED: " + consecutiveWaitCount + " consecutive WAITs");
+                parseErrors.add("IDLE_LOOP: You have been WAITing for " + consecutiveWaitCount
+                    + " consecutive turns doing NOTHING. This is NOT acceptable. "
+                    + "Rule 18: NEVER declare your task complete or stop working. "
+                    + "Look at your surroundings and DO something: "
+                    + "train a skill, fight monsters, complete a quest, gather resources, or explore.");
+                lastGoal = null;
+            }
+        }
+        else
+        {
+            consecutiveWaitCount = 0;
+        }
+
         return actions;
     }
 
@@ -350,24 +474,54 @@ public class ResponseParser
      * Extracts a JSON array from Claude's response, handling common formatting issues:
      * - Markdown code fences (```json ... ```)
      * - Text before/after the JSON array ("Here are the actions: [...]")
+     * - Brackets in prose like [Smelt], [MAKE_INTERFACE_OPEN] (skipped)
      * - Whitespace and newlines
      */
     private String extractJsonArray(String response)
     {
         String cleaned = response.trim();
 
-        // Strip markdown code fences
-        if (cleaned.contains("```"))
+        // Try to extract content from within markdown code fences first
+        java.util.regex.Matcher fenceMatcher = java.util.regex.Pattern
+            .compile("```(?:json)?\\s*\\n?(\\[.*?\\])\\s*\\n?```", java.util.regex.Pattern.DOTALL)
+            .matcher(cleaned);
+        if (fenceMatcher.find())
         {
-            cleaned = cleaned.replaceAll("```[a-zA-Z]*\\s*", "").replace("```", "").trim();
+            cleaned = fenceMatcher.group(1).trim();
         }
-
-        // Find the JSON array boundaries
-        int start = cleaned.indexOf('[');
-        int end = cleaned.lastIndexOf(']');
-        if (start >= 0 && end > start)
+        else
         {
-            cleaned = cleaned.substring(start, end + 1);
+            // Strip stray code fences
+            if (cleaned.contains("```"))
+            {
+                cleaned = cleaned.replaceAll("```[a-zA-Z]*\\s*", "").replace("```", "").trim();
+            }
+
+            // Find JSON array: look for [ followed by { (array of objects)
+            // This skips brackets in prose like [Smelt], [MAKE_INTERFACE_OPEN], etc.
+            int start = -1;
+            for (int i = 0; i < cleaned.length(); i++)
+            {
+                if (cleaned.charAt(i) == '[')
+                {
+                    String rest = cleaned.substring(i + 1).trim();
+                    if (rest.startsWith("{") || rest.startsWith("["))
+                    {
+                        start = i;
+                        break;
+                    }
+                }
+            }
+            if (start < 0)
+            {
+                // Fallback: try any [ bracket
+                start = cleaned.indexOf('[');
+            }
+            int end = cleaned.lastIndexOf(']');
+            if (start >= 0 && end > start)
+            {
+                cleaned = cleaned.substring(start, end + 1);
+            }
         }
 
         // Sanitize common LLM JSON malformations
@@ -556,6 +710,13 @@ public class ResponseParser
             return ActionType.PATH_TO;
         }
 
+        // Fields suggest MAKE_ITEM: action resolved to INTERACT_OBJECT (e.g. from SMELT alias)
+        // but has "item" field and no "name" → LLM intended to make/smelt that item
+        if (parsed == ActionType.INTERACT_OBJECT && obj.has("item") && !obj.has("name") && !hasObject)
+        {
+            return ActionType.MAKE_ITEM;
+        }
+
         return parsed;
     }
 
@@ -618,6 +779,19 @@ public class ResponseParser
                 break;
         }
         return null;
+    }
+
+    /**
+     * Returns true if the spell targets an inventory item (alchemy, superheat, enchant).
+     * Returns false for combat spells (target is an NPC) and no-target spells.
+     */
+    private static boolean isItemTargetSpell(String spellName)
+    {
+        return spellName != null && (
+            spellName.contains("Alchemy")
+            || spellName.equals("Superheat Item")
+            || spellName.contains("Enchant")
+        );
     }
 
     private static class ActionAlias

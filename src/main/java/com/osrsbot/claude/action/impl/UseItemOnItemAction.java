@@ -27,6 +27,9 @@ public class UseItemOnItemAction
             return ActionResult.failure(ActionType.USE_ITEM_ON_ITEM, "No item2 name specified");
         }
 
+        // Ensure inventory tab is open before looking up items
+        OpenTabAction.ensureTab(client, human, clientThread, "inventory");
+
         // Phase 1: Widget lookups on client thread + count total inventory for verification
         Object[] lookupData;
         try

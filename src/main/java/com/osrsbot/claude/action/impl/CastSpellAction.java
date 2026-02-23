@@ -7,6 +7,7 @@ import com.osrsbot.claude.human.HumanSimulator;
 import com.osrsbot.claude.util.ClientThreadRunner;
 import com.osrsbot.claude.util.ItemUtils;
 import com.osrsbot.claude.util.NpcUtils;
+import com.osrsbot.claude.util.ObjectUtils;
 import net.runelite.api.*;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
@@ -27,7 +28,8 @@ public class CastSpellAction
     private static final int SPELLBOOK_GROUP_ID = 218;
 
     public static ActionResult execute(Client client, HumanSimulator human, NpcUtils npcUtils,
-                                       ItemUtils itemUtils, ClientThread clientThread, BotAction action)
+                                       ItemUtils itemUtils, ObjectUtils objectUtils,
+                                       ClientThread clientThread, BotAction action)
     {
         String spellName = action.getName();
         if (spellName == null || spellName.isEmpty())
@@ -153,6 +155,37 @@ public class CastSpellAction
             }
 
             human.moveAndClick(itemPoint.x, itemPoint.y);
+            human.shortPause();
+            return ActionResult.success(ActionType.CAST_SPELL);
+        }
+
+        // If targeting a game object (rare: e.g. casting on specific objects)
+        String targetObject = action.getObject();
+        if (targetObject != null && !targetObject.isEmpty())
+        {
+            Point objPoint;
+            try
+            {
+                objPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    TileObject obj = objectUtils.findNearest(client, targetObject);
+                    if (obj == null) return null;
+                    if (obj.getClickbox() == null) return null;
+                    Rectangle bounds = obj.getClickbox().getBounds();
+                    if (bounds == null) return null;
+                    return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                });
+            }
+            catch (Throwable t)
+            {
+                return ActionResult.failure(ActionType.CAST_SPELL, "Object target lookup failed: " + t.getMessage());
+            }
+
+            if (objPoint == null)
+            {
+                return ActionResult.failure(ActionType.CAST_SPELL, "Target object not found: " + targetObject);
+            }
+
+            human.moveAndClick(objPoint.x, objPoint.y);
             human.shortPause();
             return ActionResult.success(ActionType.CAST_SPELL);
         }

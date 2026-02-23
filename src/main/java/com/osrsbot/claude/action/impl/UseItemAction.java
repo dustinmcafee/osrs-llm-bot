@@ -19,6 +19,9 @@ public class UseItemAction
             return ActionResult.failure(ActionType.USE_ITEM, "No item name specified");
         }
 
+        // Ensure inventory tab is open before looking up items
+        OpenTabAction.ensureTab(client, human, clientThread, "inventory");
+
         // Phase 1: Widget lookup on client thread
         java.awt.Point point;
         try

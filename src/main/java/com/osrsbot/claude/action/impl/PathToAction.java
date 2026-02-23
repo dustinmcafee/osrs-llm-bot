@@ -183,7 +183,20 @@ public class PathToAction
             }
 
             // --- Stuck detection (graduated) ---
-            if (lastLoopPos != null && playerPos.distanceTo(lastLoopPos) <= 1)
+            // Skip stuck counting if the player is currently animating (mining,
+            // chopping, fishing, etc.) — they're not stuck, just busy.
+            boolean isAnimating = false;
+            try
+            {
+                Integer anim = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    Player local = client.getLocalPlayer();
+                    return local != null ? local.getAnimation() : AnimationID.IDLE;
+                });
+                isAnimating = anim != null && anim != AnimationID.IDLE;
+            }
+            catch (Throwable t) {}
+
+            if (lastLoopPos != null && playerPos.distanceTo(lastLoopPos) <= 1 && !isAnimating)
             {
                 stuckCount++;
                 if (stuckCount >= STUCK_REROUTE)
@@ -325,27 +338,39 @@ public class PathToAction
             steps++;
         }
 
-        // Chunk complete — return progress so Claude can see game state and decide
-        String progressMsg;
+        // Chunk complete — return progress with game state snapshot so Claude can
+        // decide whether to keep walking, eat, interact with something nearby, etc.
+        StringBuilder progressMsg = new StringBuilder();
         if (playerPos == null)
         {
-            progressMsg = "Walking to (" + targetX + "," + targetY + "): position unknown. Re-issue PATH_TO to continue.";
+            progressMsg.append("Walking to (").append(targetX).append(",").append(targetY)
+                .append("): position unknown.");
         }
         else if (playerPos.getPlane() != targetPlane)
         {
             int xyDist = Math.max(Math.abs(playerPos.getX() - targetX), Math.abs(playerPos.getY() - targetY));
-            progressMsg = "Walking to (" + targetX + "," + targetY + ",plane=" + targetPlane + "): "
-                + "currently on plane " + playerPos.getPlane() + " (need plane " + targetPlane + "), "
-                + xyDist + " tiles away horizontally. Re-issue PATH_TO to continue.";
+            progressMsg.append("Walking to (").append(targetX).append(",").append(targetY)
+                .append(",plane=").append(targetPlane).append("): on plane ")
+                .append(playerPos.getPlane()).append(", ").append(xyDist).append(" tiles away.");
         }
         else
         {
             int distRemaining = playerPos.distanceTo(target);
-            progressMsg = "Walking to (" + targetX + "," + targetY + "): "
-                + distRemaining + " tiles remaining. Re-issue PATH_TO to continue.";
+            progressMsg.append("Walking to (").append(targetX).append(",").append(targetY)
+                .append("): ").append(distRemaining).append(" tiles remaining.");
         }
-        System.out.println("[ClaudeBot] PATH_TO: chunk done — " + progressMsg);
-        return ActionResult.success(ActionType.PATH_TO, progressMsg);
+        progressMsg.append(" Re-issue PATH_TO to continue.");
+
+        // Append game state snapshot
+        String snapshot = buildWalkSnapshot(client, objectUtils, clientThread, playerPos);
+        if (snapshot != null && !snapshot.isEmpty())
+        {
+            progressMsg.append("\n").append(snapshot);
+        }
+
+        String result = progressMsg.toString();
+        System.out.println("[ClaudeBot] PATH_TO: chunk done — " + result);
+        return ActionResult.success(ActionType.PATH_TO, result);
     }
 
     // ───────────────────── Helpers ─────────────────────
@@ -365,6 +390,149 @@ public class PathToAction
 
         if (fleeing) steps += 5;
         return steps;
+    }
+
+    /**
+     * Builds a compact game state snapshot for the PATH_TO progress message.
+     * Lets Claude see HP, inventory, nearby objects/NPCs while still walking.
+     */
+    private static String buildWalkSnapshot(Client client, ObjectUtils objectUtils,
+                                             ClientThread clientThread, WorldPoint playerPos)
+    {
+        try
+        {
+            return ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Player local = client.getLocalPlayer();
+                if (local == null) return "";
+
+                StringBuilder sb = new StringBuilder();
+
+                // Player vitals
+                int hp = client.getBoostedSkillLevel(Skill.HITPOINTS);
+                int maxHp = client.getRealSkillLevel(Skill.HITPOINTS);
+                int run = client.getEnergy() / 100;
+                sb.append("[HP:").append(hp).append("/").append(maxHp)
+                  .append(" Run:").append(run).append("%]");
+
+                // Inventory count
+                net.runelite.api.widgets.Widget inv = client.getWidget(WidgetInfo.INVENTORY);
+                if (inv != null)
+                {
+                    int count = 0;
+                    net.runelite.api.widgets.Widget[] children = inv.getDynamicChildren();
+                    if (children != null)
+                    {
+                        for (net.runelite.api.widgets.Widget child : children)
+                        {
+                            if (child.getItemId() > 0) count++;
+                        }
+                    }
+                    sb.append(" [Inv:").append(count).append("/28]");
+                }
+
+                // Nearby objects (up to 8, within 15 tiles)
+                if (playerPos != null)
+                {
+                    StringBuilder objSb = new StringBuilder();
+                    int objCount = 0;
+                    Scene scene = client.getScene();
+                    Tile[][][] tiles = scene.getTiles();
+                    int plane = client.getPlane();
+                    java.util.Map<String, Integer> objNames = new java.util.LinkedHashMap<>();
+
+                    for (int dx = -15; dx <= 15 && objCount < 30; dx++)
+                    {
+                        for (int dy = -15; dy <= 15 && objCount < 30; dy++)
+                        {
+                            int sx = local.getLocalLocation().getSceneX() + dx;
+                            int sy = local.getLocalLocation().getSceneY() + dy;
+                            if (sx < 0 || sy < 0 || sx >= Constants.SCENE_SIZE || sy >= Constants.SCENE_SIZE)
+                                continue;
+
+                            Tile tile = tiles[plane][sx][sy];
+                            if (tile == null) continue;
+
+                            for (GameObject obj : tile.getGameObjects())
+                            {
+                                if (obj == null) continue;
+                                ObjectComposition comp = client.getObjectDefinition(obj.getId());
+                                if (comp == null) continue;
+                                if (comp.getImpostorIds() != null)
+                                {
+                                    ObjectComposition imp = comp.getImpostor();
+                                    if (imp != null) comp = imp;
+                                }
+                                String name = comp.getName();
+                                if (name == null || name.isEmpty() || name.equals("null")) continue;
+                                String[] actions = comp.getActions();
+                                if (actions == null) continue;
+                                boolean hasAction = false;
+                                for (String a : actions)
+                                {
+                                    if (a != null && !a.isEmpty()) { hasAction = true; break; }
+                                }
+                                if (!hasAction) continue;
+                                objNames.merge(name, 1, Integer::sum);
+                                objCount++;
+                            }
+                        }
+                    }
+
+                    if (!objNames.isEmpty())
+                    {
+                        sb.append(" [Objects: ");
+                        int shown = 0;
+                        for (java.util.Map.Entry<String, Integer> entry : objNames.entrySet())
+                        {
+                            if (shown >= 8) break;
+                            if (shown > 0) sb.append(", ");
+                            sb.append(entry.getKey());
+                            if (entry.getValue() > 1) sb.append("(x").append(entry.getValue()).append(")");
+                            shown++;
+                        }
+                        sb.append("]");
+                    }
+
+                    // Nearby NPCs (aggressive or notable, up to 5)
+                    StringBuilder npcSb = new StringBuilder();
+                    int npcShown = 0;
+                    for (NPC npc : client.getNpcs())
+                    {
+                        if (npc == null || npcShown >= 5) continue;
+                        WorldPoint npcPos = npc.getWorldLocation();
+                        if (npcPos == null) continue;
+                        int dist = playerPos.distanceTo(npcPos);
+                        if (dist > 15) continue;
+
+                        String npcName = npc.getName();
+                        if (npcName == null || npcName.isEmpty()) continue;
+
+                        boolean isAggressive = npc.getInteracting() == local;
+                        boolean hasCombat = npc.getCombatLevel() > 0;
+
+                        if (isAggressive || hasCombat || npcShown < 3)
+                        {
+                            if (npcShown > 0) npcSb.append(", ");
+                            npcSb.append(npcName);
+                            if (hasCombat) npcSb.append("(lvl:").append(npc.getCombatLevel()).append(")");
+                            npcSb.append(" dist:").append(dist);
+                            if (isAggressive) npcSb.append(" ATTACKING");
+                            npcShown++;
+                        }
+                    }
+                    if (npcSb.length() > 0)
+                    {
+                        sb.append(" [NPCs: ").append(npcSb).append("]");
+                    }
+                }
+
+                return sb.toString();
+            });
+        }
+        catch (Throwable t)
+        {
+            return "";
+        }
     }
 
     private static Object[] getClientData(Client client, ClientThread clientThread)

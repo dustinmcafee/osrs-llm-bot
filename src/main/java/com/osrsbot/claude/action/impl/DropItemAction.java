@@ -25,6 +25,9 @@ public class DropItemAction
             return ActionResult.failure(ActionType.DROP_ITEM, "No item name specified");
         }
 
+        // Ensure inventory tab is open before looking up items
+        OpenTabAction.ensureTab(client, human, clientThread, "inventory");
+
         // Phase 1: Widget lookup on client thread — also count items for verification
         Object[] lookupData;
         try

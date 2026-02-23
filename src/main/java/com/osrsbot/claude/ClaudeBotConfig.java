@@ -191,11 +191,36 @@ public interface ClaudeBotConfig extends Config
     }
 
     @ConfigItem(
+        keyName = "geEnabled",
+        name = "Grand Exchange Enabled",
+        description = "Allow the bot to use the Grand Exchange. When disabled, GE requests are rejected and the bot must find items through shops, gathering, or other means.",
+        section = behaviorSection,
+        position = 6
+    )
+    default boolean geEnabled()
+    {
+        return true;
+    }
+
+    @Range(min = 0, max = 10000000)
+    @ConfigItem(
+        keyName = "minGoldReserve",
+        name = "Min Gold Reserve",
+        description = "Minimum coins to keep in the bank. If bank gold is at or below this value, the bot cannot withdraw more coins. Set to 0 to disable.",
+        section = behaviorSection,
+        position = 7
+    )
+    default int minGoldReserve()
+    {
+        return 0;
+    }
+
+    @ConfigItem(
         keyName = "worldHopEnabled",
         name = "World Hop Enabled",
         description = "Allow the bot to hop worlds when resources are contested",
         section = behaviorSection,
-        position = 6
+        position = 8
     )
     default boolean worldHopEnabled()
     {
@@ -207,7 +232,7 @@ public interface ClaudeBotConfig extends Config
         name = "World Hop Type",
         description = "Which worlds to hop to (Free, Members, or Any)",
         section = behaviorSection,
-        position = 7
+        position = 9
     )
     default WorldHopType worldHopType()
     {

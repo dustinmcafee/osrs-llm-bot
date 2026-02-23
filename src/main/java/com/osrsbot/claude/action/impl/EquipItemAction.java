@@ -25,6 +25,9 @@ public class EquipItemAction
             return ActionResult.failure(ActionType.EQUIP_ITEM, "No item name specified");
         }
 
+        // Ensure inventory tab is open before looking up items
+        OpenTabAction.ensureTab(client, human, clientThread, "inventory");
+
         // Phase 1: Find item widget on client thread
         Object[] lookupData;
         try

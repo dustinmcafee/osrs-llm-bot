@@ -12,13 +12,10 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
 
-import java.awt.event.KeyEvent;
-
 public class BankDepositAction
 {
     private static final int VERIFY_POLL_MS = 100;
     private static final int VERIFY_TIMEOUT_MS = 2400; // 4 game ticks
-    private static final int INPUT_TIMEOUT_MS = 2400; // 4 game ticks for chatbox input to appear
 
     // Bank quantity selector buttons (group 12) — same buttons control both withdraw and deposit
     private static final int BANK_QTY_GROUP = 12;
@@ -89,76 +86,64 @@ public class BankDepositAction
         java.awt.Point point = (java.awt.Point) lookupData[1];
         int invCountBefore = (int) lookupData[2];
 
-        // Phase 2: Click quantity selector button, then left-click the item.
-        // Uses the bank's quantity selector buttons (widget group 12) to set the
-        // default deposit amount, then left-click. This avoids the right-click menu
-        // entirely — pixel-clicking inside right-click menus is fragile and often
-        // lands on the wrong entry (e.g. Deposit-1 instead of Deposit-All).
+        // Phase 2: Set quantity mode and click the item to deposit.
+        // For standard amounts (1, 5, 10, All) we click the mode button once then the item.
+        // For custom amounts (e.g. 14, 22) we decompose into standard amounts and click
+        // the item multiple times, avoiding the unreliable Deposit-X dialog entirely.
         int qty = action.getQuantity();
-        if (qty == 0) qty = 1; // Default to 1 when no quantity specified
-        boolean needsTyping = isCustomQuantity(qty);
-        int qtyButtonChild = getQuantityButtonChild(qty);
+        if (qty == 0) qty = 1;
+        boolean needsDecomposition = isCustomQuantity(qty);
 
-        System.out.println("[ClaudeBot] BankDeposit: qty=" + qty + " button=child(" + qtyButtonChild + ") for '" + itemName + "'");
+        System.out.println("[ClaudeBot] BankDeposit: qty=" + qty + " for '" + itemName + "'");
 
-        // Click the quantity selector button
-        try
+        if (!needsDecomposition)
         {
-            java.awt.Point qtyBtnPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                Widget qtyBtn = client.getWidget(BANK_QTY_GROUP, qtyButtonChild);
-                if (qtyBtn == null || qtyBtn.isHidden()) return null;
-                java.awt.Rectangle bounds = qtyBtn.getBounds();
-                if (bounds == null) return null;
-                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
-            });
+            // Standard quantity: one mode click + one item click
+            int qtyButtonChild = getQuantityButtonChild(qty);
+            clickQuantityButton(client, human, clientThread, qtyButtonChild);
+            point = refindItemInInventory(client, clientThread, itemUtils, itemName, point);
+            human.moveAndClick(point.x, point.y);
+        }
+        else
+        {
+            // Custom quantity: decompose into 10s, 5s, and 1s
+            System.out.println("[ClaudeBot] BankDeposit: decomposing qty=" + qty + " into standard amounts");
+            int remaining = qty;
 
-            if (qtyBtnPoint != null)
+            // Deposit-10 passes
+            if (remaining >= 10)
             {
-                human.moveAndClick(qtyBtnPoint.x, qtyBtnPoint.y);
-                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
-
-                // For Deposit-X, a chatbox input dialog appears — type the quantity
-                if (needsTyping)
+                clickQuantityButton(client, human, clientThread, 27); // child 27 = "10"
+                point = refindItemInInventory(client, clientThread, itemUtils, itemName, point);
+                while (remaining >= 10)
                 {
-                    if (!waitForChatboxInput(client, clientThread, human))
-                    {
-                        System.err.println("[ClaudeBot] BankDeposit: Deposit-X input dialog did not appear for " + itemName);
-                        return ActionResult.failure(ActionType.BANK_DEPOSIT,
-                            "Deposit-X dialog did not appear for " + itemName);
-                    }
-                    human.typeText(String.valueOf(qty));
-                    human.pressKey(KeyEvent.VK_ENTER);
+                    human.moveAndClick(point.x, point.y);
                     human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+                    remaining -= 10;
                 }
             }
-            else
+            // Deposit-5 pass
+            if (remaining >= 5)
             {
-                System.err.println("[ClaudeBot] BankDeposit: quantity button not found (child=" + qtyButtonChild + ")");
+                clickQuantityButton(client, human, clientThread, 25); // child 25 = "5"
+                point = refindItemInInventory(client, clientThread, itemUtils, itemName, point);
+                human.moveAndClick(point.x, point.y);
+                human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+                remaining -= 5;
+            }
+            // Deposit-1 passes
+            if (remaining > 0)
+            {
+                clickQuantityButton(client, human, clientThread, 23); // child 23 = "1"
+                point = refindItemInInventory(client, clientThread, itemUtils, itemName, point);
+                while (remaining > 0)
+                {
+                    human.moveAndClick(point.x, point.y);
+                    if (remaining > 1) human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+                    remaining--;
+                }
             }
         }
-        catch (Throwable t)
-        {
-            System.err.println("[ClaudeBot] BankDeposit: quantity button click failed: " + t.getMessage());
-        }
-
-        // Re-find the item position (bank may have re-rendered after quantity button click)
-        try
-        {
-            java.awt.Point freshPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                Widget bankInventory = client.getWidget(WidgetInfo.BANK_INVENTORY_ITEMS_CONTAINER);
-                if (bankInventory == null) return null;
-                Widget item = itemUtils.findInWidget(bankInventory, itemName);
-                if (item == null) return null;
-                java.awt.Rectangle bounds = item.getBounds();
-                if (bounds == null) return null;
-                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
-            });
-            if (freshPoint != null) point = freshPoint;
-        }
-        catch (Throwable t) {}
-
-        // Left-click the item to deposit (quantity mode already set by the button click)
-        human.moveAndClick(point.x, point.y);
 
         // Phase 3: Wait for the deposit to actually complete (item leaves inventory)
         if (!waitForInventoryDecrease(client, clientThread, itemUtils, itemName, invCountBefore, human))
@@ -249,25 +234,58 @@ public class BankDepositAction
         return quantity != -1 && quantity != 1 && quantity != 5 && quantity != 10;
     }
 
-    /**
-     * Polls until VarClientInt 5 (INPUT_TYPE) is non-zero, indicating the chatbox
-     * is accepting text input (quantity dialogs, etc).
-     */
-    private static boolean waitForChatboxInput(Client client, ClientThread clientThread, HumanSimulator human)
+    private static void clickQuantityButton(Client client, HumanSimulator human,
+                                             ClientThread clientThread, int childId)
     {
-        long deadline = System.currentTimeMillis() + INPUT_TIMEOUT_MS;
-        while (System.currentTimeMillis() < deadline)
+        try
         {
-            try
+            java.awt.Point btn = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Widget qtyBtn = client.getWidget(BANK_QTY_GROUP, childId);
+                if (qtyBtn == null || qtyBtn.isHidden()) return null;
+                java.awt.Rectangle bounds = qtyBtn.getBounds();
+                if (bounds == null) return null;
+                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+            });
+            if (btn != null)
             {
-                boolean active = ClientThreadRunner.runOnClientThread(clientThread,
-                    () -> client.getVarcIntValue(5) != 0);
-                if (active) return true;
+                human.moveAndClick(btn.x, btn.y);
+                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
             }
-            catch (Throwable t) {}
-            human.getTimingEngine().sleep(VERIFY_POLL_MS);
+            else
+            {
+                System.err.println("[ClaudeBot] BankDeposit: quantity button not found (child=" + childId + ")");
+            }
         }
-        return false;
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] BankDeposit: quantity button click failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Re-finds the item position in the bank inventory panel. Falls back to previous point.
+     */
+    private static java.awt.Point refindItemInInventory(Client client, ClientThread clientThread,
+                                                         ItemUtils itemUtils, String itemName,
+                                                         java.awt.Point fallback)
+    {
+        try
+        {
+            java.awt.Point fresh = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Widget bankInventory = client.getWidget(WidgetInfo.BANK_INVENTORY_ITEMS_CONTAINER);
+                if (bankInventory == null) return null;
+                Widget item = itemUtils.findInWidget(bankInventory, itemName);
+                if (item == null) return null;
+                java.awt.Rectangle bounds = item.getBounds();
+                if (bounds == null) return null;
+                return new java.awt.Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+            });
+            return fresh != null ? fresh : fallback;
+        }
+        catch (Throwable t)
+        {
+            return fallback;
+        }
     }
 
     /**

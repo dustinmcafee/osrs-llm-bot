@@ -29,6 +29,9 @@ public class UseItemOnNpcAction
             return ActionResult.failure(ActionType.USE_ITEM_ON_NPC, "No NPC name specified");
         }
 
+        // Ensure inventory tab is open before looking up items
+        OpenTabAction.ensureTab(client, human, clientThread, "inventory");
+
         // Phase 1: Lookup on client thread (blocks background thread until complete)
         Object[] lookupData;
         try

@@ -259,7 +259,8 @@ public class ActionExecutor
             case BANK_DEPOSIT:
                 return BankDepositAction.execute(client, humanSimulator, itemUtils, clientThread, action);
             case BANK_WITHDRAW:
-                return BankWithdrawAction.execute(client, humanSimulator, itemUtils, clientThread, action);
+                return BankWithdrawAction.execute(client, humanSimulator, itemUtils, clientThread, action,
+                    config.minGoldReserve());
             case BANK_CLOSE:
                 return BankCloseAction.execute(client, humanSimulator, clientThread);
             case TOGGLE_PRAYER:
@@ -279,7 +280,7 @@ public class ActionExecutor
             case CLICK_WIDGET:
                 return ClickWidgetAction.execute(humanSimulator, action);
             case CAST_SPELL:
-                return CastSpellAction.execute(client, humanSimulator, npcUtils, itemUtils, clientThread, action);
+                return CastSpellAction.execute(client, humanSimulator, npcUtils, itemUtils, objectUtils, clientThread, action);
             case MAKE_ITEM:
                 return MakeItemAction.execute(client, humanSimulator, itemManager, clientThread, action);
             case SHOP_BUY:
@@ -291,8 +292,20 @@ public class ActionExecutor
             case ROTATE_CAMERA:
                 return RotateCameraAction.execute(client, humanSimulator, clientThread, action);
             case GE_BUY:
+                if (!config.geEnabled())
+                {
+                    return ActionResult.failure(ActionType.GE_BUY,
+                        "The Grand Exchange is currently unavailable. Come back in a few hours. "
+                        + "Buy items from NPC shops, gather resources yourself, or find another way.");
+                }
                 return GeBuyAction.execute(client, humanSimulator, clientThread, action);
             case GE_SELL:
+                if (!config.geEnabled())
+                {
+                    return ActionResult.failure(ActionType.GE_SELL,
+                        "The Grand Exchange is currently unavailable. Come back in a few hours. "
+                        + "Sell items to NPC shops or drop them instead.");
+                }
                 return GeSellAction.execute(client, humanSimulator, itemManager, clientThread, action);
             case OPEN_TAB:
                 return OpenTabAction.execute(client, humanSimulator, clientThread, action);

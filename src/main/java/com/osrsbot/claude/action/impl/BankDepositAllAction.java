@@ -21,6 +21,12 @@ public class BankDepositAllAction
 
     public static ActionResult execute(Client client, HumanSimulator human, ClientThread clientThread)
     {
+        // Wait for bank to be open (handles batched open + deposit-all)
+        if (!waitForBankOpen(client, clientThread, human))
+        {
+            return ActionResult.failure(ActionType.BANK_DEPOSIT_ALL, "Bank not open");
+        }
+
         // Phase 1: Find deposit-all button on client thread
         java.awt.Point point;
         try
@@ -83,5 +89,26 @@ public class BankDepositAllAction
         human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
 
         return ActionResult.success(ActionType.BANK_DEPOSIT_ALL);
+    }
+
+    /**
+     * Polls until the bank interface is open, up to VERIFY_TIMEOUT_MS.
+     * Handles the timing gap when open-bank and deposit-all are batched together.
+     */
+    private static boolean waitForBankOpen(Client client, ClientThread clientThread, HumanSimulator human)
+    {
+        long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline)
+        {
+            try
+            {
+                boolean open = ClientThreadRunner.runOnClientThread(clientThread,
+                    () -> client.getItemContainer(InventoryID.BANK) != null);
+                if (open) return true;
+            }
+            catch (Throwable t) {}
+            human.getTimingEngine().sleep(VERIFY_POLL_MS);
+        }
+        return false;
     }
 }

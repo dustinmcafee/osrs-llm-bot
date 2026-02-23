@@ -13,6 +13,8 @@ import net.runelite.client.game.ItemManager;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.event.KeyEvent;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Sells an item on the Grand Exchange.
@@ -32,6 +34,7 @@ public class GeSellAction
 {
     private static final int GE_GROUP_ID = 465;
     private static final int GE_INV_GROUP_ID = 467; // GE inventory panel
+    private static final int WIDGET_SEARCH_RANGE = 100;
     private static final int INPUT_POLL_MS = 100;
     private static final int INPUT_TIMEOUT_MS = 2400; // 4 game ticks for chatbox input to appear
 
@@ -48,60 +51,25 @@ public class GeSellAction
         if (quantity <= 0) quantity = 1;
 
         // Step 1: Find a sell slot in the GE
-        Point sellButtonPoint;
+        Object[] step1Result;
         try
         {
-            sellButtonPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+            step1Result = ClientThreadRunner.runOnClientThread(clientThread, () -> {
                 Widget ge = client.getWidget(GE_GROUP_ID, 0);
-                if (ge == null || ge.isHidden()) return null;
-
-                // Search for sell offer button
-                for (int childIdx = 0; childIdx < 30; childIdx++)
+                if (ge == null || ge.isHidden())
                 {
-                    Widget child = client.getWidget(GE_GROUP_ID, childIdx);
-                    if (child == null || child.isHidden()) continue;
-
-                    String[] actions = child.getActions();
-                    if (actions != null)
-                    {
-                        for (String act : actions)
-                        {
-                            if (act != null && act.equalsIgnoreCase("Create Sell offer"))
-                            {
-                                Rectangle bounds = child.getBounds();
-                                if (bounds != null)
-                                {
-                                    return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
-                                }
-                            }
-                        }
-                    }
-
-                    Widget[] dynChildren = child.getDynamicChildren();
-                    if (dynChildren != null)
-                    {
-                        for (Widget dynChild : dynChildren)
-                        {
-                            if (dynChild == null || dynChild.isHidden()) continue;
-                            String[] dynActions = dynChild.getActions();
-                            if (dynActions != null)
-                            {
-                                for (String act : dynActions)
-                                {
-                                    if (act != null && act.equalsIgnoreCase("Create Sell offer"))
-                                    {
-                                        Rectangle bounds = dynChild.getBounds();
-                                        if (bounds != null)
-                                        {
-                                            return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    return new Object[]{ "GE_NOT_OPEN" };
                 }
-                return null;
+
+                Point p = findWidgetByAction(client, GE_GROUP_ID, "Create Sell offer");
+                if (p != null)
+                {
+                    return new Object[]{ "OK", p };
+                }
+
+                // Not found — collect diagnostics
+                List<String> foundActions = collectAllActions(client, GE_GROUP_ID);
+                return new Object[]{ "NO_SLOT", foundActions };
             });
         }
         catch (Throwable t)
@@ -109,11 +77,24 @@ public class GeSellAction
             return ActionResult.failure(ActionType.GE_SELL, "GE lookup failed: " + t.getMessage());
         }
 
-        if (sellButtonPoint == null)
+        String status = (String) step1Result[0];
+        if ("GE_NOT_OPEN".equals(status))
         {
             return ActionResult.failure(ActionType.GE_SELL,
-                "GE not open or no empty sell slot found. Open the GE first with INTERACT_NPC.");
+                "GE interface is not open. Open the GE first with INTERACT_NPC(\"Grand Exchange Clerk\", option=\"Exchange\").");
         }
+        if ("NO_SLOT".equals(status))
+        {
+            @SuppressWarnings("unchecked")
+            List<String> actions = (List<String>) step1Result[1];
+            System.err.println("[ClaudeBot] GE_SELL: no 'Create Sell offer' found. Actions in group "
+                + GE_GROUP_ID + ": " + actions);
+            return ActionResult.failure(ActionType.GE_SELL,
+                "GE is open but no empty sell offer slot found. All 8 GE slots may be in use, "
+                + "or a buy/sell offer setup screen is already open.");
+        }
+
+        Point sellButtonPoint = (Point) step1Result[1];
 
         // Step 2: Click the sell slot (humanized)
         human.moveAndClick(sellButtonPoint.x, sellButtonPoint.y);
@@ -180,30 +161,8 @@ public class GeSellAction
         Point confirmPoint;
         try
         {
-            confirmPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                for (int childIdx = 0; childIdx < 50; childIdx++)
-                {
-                    Widget child = client.getWidget(GE_GROUP_ID, childIdx);
-                    if (child == null || child.isHidden()) continue;
-
-                    String[] actions = child.getActions();
-                    if (actions != null)
-                    {
-                        for (String act : actions)
-                        {
-                            if (act != null && act.equalsIgnoreCase("Confirm"))
-                            {
-                                Rectangle bounds = child.getBounds();
-                                if (bounds != null)
-                                {
-                                    return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
-                                }
-                            }
-                        }
-                    }
-                }
-                return null;
-            });
+            confirmPoint = ClientThreadRunner.runOnClientThread(clientThread,
+                () -> findWidgetByAction(client, GE_GROUP_ID, "Confirm"));
         }
         catch (Throwable t)
         {
@@ -214,6 +173,10 @@ public class GeSellAction
         {
             human.moveAndClick(confirmPoint.x, confirmPoint.y);
             human.shortPause();
+        }
+        else
+        {
+            System.err.println("[ClaudeBot] GE_SELL: Confirm button not found");
         }
 
         return ActionResult.success(ActionType.GE_SELL);
@@ -245,30 +208,8 @@ public class GeSellAction
     {
         try
         {
-            Point qtyPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                for (int childIdx = 0; childIdx < 50; childIdx++)
-                {
-                    Widget child = client.getWidget(GE_GROUP_ID, childIdx);
-                    if (child == null || child.isHidden()) continue;
-
-                    String[] actions = child.getActions();
-                    if (actions != null)
-                    {
-                        for (String act : actions)
-                        {
-                            if (act != null && act.equalsIgnoreCase("Enter quantity"))
-                            {
-                                Rectangle bounds = child.getBounds();
-                                if (bounds != null)
-                                {
-                                    return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
-                                }
-                            }
-                        }
-                    }
-                }
-                return null;
-            });
+            Point qtyPoint = ClientThreadRunner.runOnClientThread(clientThread,
+                () -> findWidgetByAction(client, GE_GROUP_ID, "Enter quantity"));
 
             if (qtyPoint != null)
             {
@@ -282,10 +223,152 @@ public class GeSellAction
                 human.pressKey(KeyEvent.VK_ENTER);
                 human.shortPause();
             }
+            else
+            {
+                System.err.println("[ClaudeBot] GE_SELL: 'Enter quantity' button not found");
+            }
         }
         catch (Throwable t)
         {
             System.err.println("[ClaudeBot] GE sell quantity set failed: " + t.getMessage());
+        }
+    }
+
+    // ---- Shared widget search helpers ----
+
+    /**
+     * Strips HTML tags (e.g. {@code <col=ff981f>}, {@code </col>}) from widget text.
+     */
+    private static String stripTags(String text)
+    {
+        if (text == null) return null;
+        return text.replaceAll("<[^>]+>", "").trim();
+    }
+
+    /**
+     * Searches a widget group for a widget whose action matches the target
+     * (after stripping color tags). Checks direct children, dynamic children,
+     * and static children up to WIDGET_SEARCH_RANGE.
+     */
+    private static Point findWidgetByAction(Client client, int groupId, String targetAction)
+    {
+        for (int childIdx = 0; childIdx < WIDGET_SEARCH_RANGE; childIdx++)
+        {
+            Widget child = client.getWidget(groupId, childIdx);
+            if (child == null || child.isHidden()) continue;
+
+            Point p = checkWidgetActions(child, targetAction);
+            if (p != null) return p;
+
+            // Check dynamic children
+            Widget[] dynChildren = child.getDynamicChildren();
+            if (dynChildren != null)
+            {
+                for (Widget dynChild : dynChildren)
+                {
+                    if (dynChild == null || dynChild.isHidden()) continue;
+                    p = checkWidgetActions(dynChild, targetAction);
+                    if (p != null) return p;
+                }
+            }
+
+            // Check static children
+            Widget[] staticChildren = child.getStaticChildren();
+            if (staticChildren != null)
+            {
+                for (Widget staticChild : staticChildren)
+                {
+                    if (staticChild == null || staticChild.isHidden()) continue;
+                    p = checkWidgetActions(staticChild, targetAction);
+                    if (p != null) return p;
+                }
+            }
+
+            // Check getChildren()
+            Widget[] children = child.getChildren();
+            if (children != null)
+            {
+                for (Widget c : children)
+                {
+                    if (c == null || c.isHidden()) continue;
+                    p = checkWidgetActions(c, targetAction);
+                    if (p != null) return p;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Checks if a widget has an action matching the target (after stripping HTML tags).
+     * Returns the widget center point if found, null otherwise.
+     */
+    private static Point checkWidgetActions(Widget widget, String targetAction)
+    {
+        String[] actions = widget.getActions();
+        if (actions == null) return null;
+        for (String act : actions)
+        {
+            if (act == null) continue;
+            String stripped = stripTags(act);
+            if (stripped.equalsIgnoreCase(targetAction))
+            {
+                Rectangle bounds = widget.getBounds();
+                if (bounds != null)
+                {
+                    return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Collects all non-null actions from all widgets in a group for diagnostics.
+     */
+    private static List<String> collectAllActions(Client client, int groupId)
+    {
+        List<String> found = new ArrayList<>();
+        for (int childIdx = 0; childIdx < WIDGET_SEARCH_RANGE; childIdx++)
+        {
+            Widget child = client.getWidget(groupId, childIdx);
+            if (child == null || child.isHidden()) continue;
+
+            collectActionsFromWidget(child, "w" + childIdx, found);
+
+            Widget[] dynChildren = child.getDynamicChildren();
+            if (dynChildren != null)
+            {
+                for (int i = 0; i < dynChildren.length; i++)
+                {
+                    if (dynChildren[i] == null || dynChildren[i].isHidden()) continue;
+                    collectActionsFromWidget(dynChildren[i], "w" + childIdx + ".dyn" + i, found);
+                }
+            }
+
+            Widget[] staticChildren = child.getStaticChildren();
+            if (staticChildren != null)
+            {
+                for (int i = 0; i < staticChildren.length; i++)
+                {
+                    if (staticChildren[i] == null || staticChildren[i].isHidden()) continue;
+                    collectActionsFromWidget(staticChildren[i], "w" + childIdx + ".static" + i, found);
+                }
+            }
+        }
+        return found;
+    }
+
+    private static void collectActionsFromWidget(Widget widget, String path, List<String> found)
+    {
+        String[] actions = widget.getActions();
+        if (actions == null) return;
+        for (String act : actions)
+        {
+            if (act != null && !act.isEmpty())
+            {
+                found.add(path + ":" + stripTags(act) + " (raw:" + act + ")");
+            }
         }
     }
 }

@@ -83,76 +83,69 @@ public class ShopSellAction
         human.moveMouse(itemPoint.x, itemPoint.y);
         human.shortPause();
 
-        // Phase 3: Fire menu action using real menu entries from the game.
-        // This avoids fragile right-click menu pixel clicking.
-        String sellOption = getSellOption(quantity);
-        String fItemName = itemName;
+        // Phase 3: Decompose quantity into standard Sell amounts (50, 10, 5, 1)
+        // and fire each as a separate menu action. This handles custom quantities
+        // like 22 → Sell 10 + Sell 10 + Sell 1 + Sell 1, instead of silently rounding down.
+        if (quantity != 1 && quantity != 5 && quantity != 10 && quantity != 50)
+        {
+            System.out.println("[ClaudeBot] ShopSell: decomposing qty=" + quantity + " into standard amounts");
+        }
 
-        System.out.println("[ClaudeBot] ShopSell: option=" + sellOption + " for '" + fItemName + "'");
+        int remaining = quantity;
+        int[] steps = {50, 10, 5, 1};
+        final String fItemName = itemName;
 
-        clientThread.invokeLater(() -> {
-            try
+        for (int step : steps)
+        {
+            final String sellOption = "Sell " + step;
+            while (remaining >= step)
             {
-                MenuEntry[] entries = client.getMenuEntries();
-                MenuEntry match = null;
-                MenuEntry fallback = null;
+                System.out.println("[ClaudeBot] ShopSell: " + sellOption + " for '" + fItemName + "' (remaining=" + remaining + ")");
 
-                if (entries != null)
-                {
-                    for (MenuEntry entry : entries)
+                clientThread.invokeLater(() -> {
+                    try
                     {
-                        String entryOption = entry.getOption();
-                        String entryTarget = entry.getTarget();
-                        if (entryOption == null || entryTarget == null) continue;
-                        if (!entryTarget.toLowerCase().contains(fItemName.toLowerCase())) continue;
-
-                        if (entryOption.equalsIgnoreCase(sellOption))
+                        MenuEntry[] entries = client.getMenuEntries();
+                        MenuEntry match = null;
+                        if (entries != null)
                         {
-                            match = entry;
-                            break;
+                            for (MenuEntry entry : entries)
+                            {
+                                String entryOption = entry.getOption();
+                                String entryTarget = entry.getTarget();
+                                if (entryOption == null || entryTarget == null) continue;
+                                if (!entryTarget.toLowerCase().contains(fItemName.toLowerCase())) continue;
+                                if (entryOption.equalsIgnoreCase(sellOption))
+                                {
+                                    match = entry;
+                                    break;
+                                }
+                            }
                         }
-                        // Track "Sell 1" as fallback
-                        if (entryOption.equalsIgnoreCase("Sell 1"))
+                        if (match != null)
                         {
-                            fallback = entry;
+                            client.menuAction(
+                                match.getParam0(), match.getParam1(),
+                                match.getType(), match.getIdentifier(),
+                                -1, match.getOption(), match.getTarget()
+                            );
+                        }
+                        else
+                        {
+                            System.err.println("[ClaudeBot] ShopSell: no menu entry for '" + sellOption + "' on '" + fItemName + "'");
                         }
                     }
-                }
+                    catch (Throwable t)
+                    {
+                        System.err.println("[ClaudeBot] ShopSell menuAction FAILED: " + t.getClass().getName() + ": " + t.getMessage());
+                    }
+                });
 
-                MenuEntry chosen = match != null ? match : fallback;
-                if (chosen != null)
-                {
-                    System.out.println("[ClaudeBot] ShopSell: using menu entry: " + chosen.getOption()
-                        + " target=" + chosen.getTarget());
-                    client.menuAction(
-                        chosen.getParam0(), chosen.getParam1(),
-                        chosen.getType(), chosen.getIdentifier(),
-                        -1, chosen.getOption(), chosen.getTarget()
-                    );
-                }
-                else
-                {
-                    System.err.println("[ClaudeBot] ShopSell: no matching menu entry for '" + sellOption + "' on '" + fItemName + "'");
-                }
+                remaining -= step;
+                human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
             }
-            catch (Throwable t)
-            {
-                System.err.println("[ClaudeBot] ShopSell menuAction FAILED: " + t.getClass().getName() + ": " + t.getMessage());
-                t.printStackTrace(System.err);
-            }
-        });
-
-        // Wait one game tick so shop/inventory refreshes before next action
-        human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
+        }
 
         return ActionResult.success(ActionType.SHOP_SELL);
-    }
-
-    private static String getSellOption(int quantity)
-    {
-        if (quantity >= 50) return "Sell 50";
-        if (quantity >= 10) return "Sell 10";
-        if (quantity >= 5) return "Sell 5";
-        return "Sell 1";
     }
 }

@@ -23,6 +23,9 @@ public class EatFoodAction
             return ActionResult.failure(ActionType.EAT_FOOD, "No food name specified");
         }
 
+        // Ensure inventory tab is open before looking up items
+        OpenTabAction.ensureTab(client, human, clientThread, "inventory");
+
         // Phase 1: Widget lookup + "Eat" action check on client thread
         Object[] lookupData;
         try
