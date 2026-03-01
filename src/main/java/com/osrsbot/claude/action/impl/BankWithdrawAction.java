@@ -205,92 +205,39 @@ public class BankWithdrawAction
         System.out.println("[ClaudeBot] BankWithdraw: option='" + withdrawOption
             + "' id=" + withdrawId + " nativeType=" + nativeType + " for '" + itemName + "'");
 
-        if (nativeType == MenuAction.CC_OP)
+        // All bank operations use PostMenuSort menu swap + left-click.
+        // client.menuAction() silently fails for bank widget entries (both CC_OP and
+        // CC_OP_LOW_PRIORITY), so we use the same approach RuneLite's MenuEntrySwapper uses:
+        // set the desired entry via BankMenuSwap, let onPostMenuSort promote it to the
+        // left-click default, then click normally.
+        System.out.println("[ClaudeBot] BankWithdraw: using menu swap for " + withdrawOption
+            + " (id=" + withdrawId + ", type=" + nativeType + ")");
+
+        BankMenuSwap.setPendingSwap(withdrawId, nativeType);
+        try
         {
-            // Standard quantity (1/5/10): fire directly via menuAction
             human.moveMouse(itemPoint.x, itemPoint.y);
             human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+            human.click();
+        }
+        finally
+        {
+            human.getTimingEngine().sleep(100);
+            BankMenuSwap.clearPendingSwap();
+        }
 
-            boolean actionFired;
-            try
-            {
-                actionFired = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                    net.runelite.api.MenuEntry[] entries = client.getMenuEntries();
-                    if (entries == null) return false;
-                    for (net.runelite.api.MenuEntry entry : entries)
-                    {
-                        if (entry.getType() == MenuAction.CC_OP
-                            && entry.getIdentifier() == withdrawId)
-                        {
-                            System.out.println("[ClaudeBot] BankWithdraw: firing " + withdrawOption
-                                + " via menuAction (CC_OP id=" + withdrawId + ")");
-                            client.menuAction(
-                                entry.getParam0(), entry.getParam1(),
-                                MenuAction.CC_OP, entry.getIdentifier(),
-                                -1, entry.getOption(), entry.getTarget()
-                            );
-                            return true;
-                        }
-                    }
-                    System.err.println("[ClaudeBot] BankWithdraw: CC_OP id=" + withdrawId + " not found. Entries:");
-                    for (net.runelite.api.MenuEntry e : entries)
-                    {
-                        System.err.println("[ClaudeBot]   " + e.getOption() + " type=" + e.getType()
-                            + " id=" + e.getIdentifier());
-                    }
-                    return false;
-                });
-            }
-            catch (Throwable t)
-            {
-                System.err.println("[ClaudeBot] BankWithdraw: menuAction failed: " + t.getMessage());
-                actionFired = false;
-            }
-
-            if (!actionFired)
+        // For Withdraw-X: dialog opens, type amount and Enter
+        if (qty != -1 && qty != 1 && qty != 5 && qty != 10)
+        {
+            if (!waitForInputDialog(client, clientThread, human))
             {
                 closeSearch(client, human, clientThread);
                 return ActionResult.failure(ActionType.BANK_WITHDRAW,
-                    "Bank withdraw: " + withdrawOption + " (id=" + withdrawId + ") not found for " + itemName);
+                    "Bank withdraw: quantity dialog did not open for " + itemName);
             }
-        }
-        else
-        {
-            // CC_OP_LOW_PRIORITY entry (Withdraw-All id=7, Withdraw-X id=6):
-            // Use PostMenuSort menu swap — promote to CC_OP + move to top, then left-click.
-            // This is the same mechanism RuneLite's MenuEntrySwapper uses.
-            System.out.println("[ClaudeBot] BankWithdraw: using menu swap for " + withdrawOption
-                + " (id=" + withdrawId + ", CC_OP_LOW_PRIORITY)");
-
-            BankMenuSwap.setPendingSwap(withdrawId, MenuAction.CC_OP_LOW_PRIORITY);
-            try
-            {
-                human.moveMouse(itemPoint.x, itemPoint.y);
-                // Wait for at least one PostMenuSort cycle to apply the swap
-                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
-                human.click();
-            }
-            finally
-            {
-                // Clear swap after click is dispatched — the entry is already swapped
-                // in the current frame, so the click will use it
-                human.getTimingEngine().sleep(100);
-                BankMenuSwap.clearPendingSwap();
-            }
-
-            // For Withdraw-X: dialog opens, type amount and Enter
-            if (qty != -1)
-            {
-                if (!waitForInputDialog(client, clientThread, human))
-                {
-                    closeSearch(client, human, clientThread);
-                    return ActionResult.failure(ActionType.BANK_WITHDRAW,
-                        "Bank withdraw: quantity dialog did not open for " + itemName);
-                }
-                human.typeText(String.valueOf(qty));
-                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
-                human.pressKey(KeyEvent.VK_ENTER);
-            }
+            human.typeText(String.valueOf(qty));
+            human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+            human.pressKey(KeyEvent.VK_ENTER);
         }
 
         // Wait one tick for the game to process the withdrawal

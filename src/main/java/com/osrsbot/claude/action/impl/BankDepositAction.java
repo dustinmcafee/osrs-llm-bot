@@ -20,6 +20,8 @@ public class BankDepositAction
 {
     private static final int VERIFY_POLL_MS = 100;
     private static final int VERIFY_TIMEOUT_MS = 2400; // 4 game ticks
+    private static final int BANK_SEARCH_GROUP = 12;
+    private static final int BANK_SEARCH_CHILD = 36;
 
     public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
     {
@@ -35,6 +37,9 @@ public class BankDepositAction
         {
             return ActionResult.failure(ActionType.BANK_DEPOSIT, "Bank deposit: BANK_NOT_OPEN for " + itemName);
         }
+
+        // Close bank search if active (left over from a previous BANK_WITHDRAW)
+        closeSearchIfActive(client, human, clientThread);
 
         // Phase 1: Widget lookup on client thread — count current inventory qty for verification
         Object[] lookupData;
@@ -93,10 +98,7 @@ public class BankDepositAction
         // Re-find item position in case the bank re-rendered
         point = refindItemInInventory(client, clientThread, itemUtils, itemName, point);
 
-        // Phase 2: Deposit the item.
-        // Standard quantities (1/5/10) use CC_OP entries → client.menuAction().
-        // Deposit-All (id=8) and Deposit-X (id=6) are CC_OP_LOW_PRIORITY →
-        // use PostMenuSort menu swap (same as RuneLite's MenuEntrySwapper).
+        // Phase 2: Deposit via PostMenuSort menu swap + left-click
         int depositId = getDepositIdentifier(qty);
         MenuAction nativeType = getDepositNativeType(qty);
         String depositOption = getDepositOption(qty);
@@ -104,87 +106,36 @@ public class BankDepositAction
         System.out.println("[ClaudeBot] BankDeposit: option='" + depositOption
             + "' id=" + depositId + " nativeType=" + nativeType + " for '" + itemName + "'");
 
-        if (nativeType == MenuAction.CC_OP)
+        // All bank operations use PostMenuSort menu swap + left-click.
+        // client.menuAction() silently fails for bank widget entries, so we use the
+        // same approach as RuneLite's MenuEntrySwapper for all quantities.
+        System.out.println("[ClaudeBot] BankDeposit: using menu swap for " + depositOption
+            + " (id=" + depositId + ", type=" + nativeType + ")");
+
+        BankMenuSwap.setPendingSwap(depositId, nativeType);
+        try
         {
-            // Standard quantity (1/5/10): fire directly via menuAction
             human.moveMouse(point.x, point.y);
             human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+            human.click();
+        }
+        finally
+        {
+            human.getTimingEngine().sleep(100);
+            BankMenuSwap.clearPendingSwap();
+        }
 
-            boolean actionFired;
-            try
-            {
-                final int targetId = depositId;
-                actionFired = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                    net.runelite.api.MenuEntry[] entries = client.getMenuEntries();
-                    if (entries == null) return false;
-                    for (net.runelite.api.MenuEntry entry : entries)
-                    {
-                        if (entry.getType() == MenuAction.CC_OP
-                            && entry.getIdentifier() == targetId)
-                        {
-                            System.out.println("[ClaudeBot] BankDeposit: firing " + depositOption
-                                + " via menuAction (CC_OP id=" + targetId + ")");
-                            client.menuAction(
-                                entry.getParam0(), entry.getParam1(),
-                                MenuAction.CC_OP, entry.getIdentifier(),
-                                -1, entry.getOption(), entry.getTarget()
-                            );
-                            return true;
-                        }
-                    }
-                    System.err.println("[ClaudeBot] BankDeposit: CC_OP id=" + targetId + " not found. Entries:");
-                    for (net.runelite.api.MenuEntry e : entries)
-                    {
-                        System.err.println("[ClaudeBot]   " + e.getOption() + " type=" + e.getType()
-                            + " id=" + e.getIdentifier());
-                    }
-                    return false;
-                });
-            }
-            catch (Throwable t)
-            {
-                System.err.println("[ClaudeBot] BankDeposit: menuAction failed: " + t.getMessage());
-                actionFired = false;
-            }
-
-            if (!actionFired)
+        // For Deposit-X: dialog opens, type amount and Enter
+        if (qty != -1 && qty != 1 && qty != 5 && qty != 10)
+        {
+            if (!waitForQuantityDialog(client, clientThread, human))
             {
                 return ActionResult.failure(ActionType.BANK_DEPOSIT,
-                    "Bank deposit: " + depositOption + " (id=" + depositId + ") not found for " + itemName);
+                    "Bank deposit: quantity dialog did not open for " + itemName);
             }
-        }
-        else
-        {
-            // CC_OP_LOW_PRIORITY entry (Deposit-All id=8, Deposit-X id=6):
-            // Use PostMenuSort menu swap — same mechanism as RuneLite's MenuEntrySwapper.
-            System.out.println("[ClaudeBot] BankDeposit: using menu swap for " + depositOption
-                + " (id=" + depositId + ", CC_OP_LOW_PRIORITY)");
-
-            BankMenuSwap.setPendingSwap(depositId, MenuAction.CC_OP_LOW_PRIORITY);
-            try
-            {
-                human.moveMouse(point.x, point.y);
-                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
-                human.click();
-            }
-            finally
-            {
-                human.getTimingEngine().sleep(100);
-                BankMenuSwap.clearPendingSwap();
-            }
-
-            // For Deposit-X: dialog opens, type amount and Enter
-            if (qty != -1)
-            {
-                if (!waitForQuantityDialog(client, clientThread, human))
-                {
-                    return ActionResult.failure(ActionType.BANK_DEPOSIT,
-                        "Bank deposit: quantity dialog did not open for " + itemName);
-                }
-                human.typeText(String.valueOf(qty));
-                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
-                human.pressKey(KeyEvent.VK_ENTER);
-            }
+            human.typeText(String.valueOf(qty));
+            human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+            human.pressKey(KeyEvent.VK_ENTER);
         }
 
         // Phase 3: Wait for the deposit to actually complete (item leaves inventory)
@@ -214,25 +165,22 @@ public class BankDepositAction
     }
 
     /**
-     * Returns the bank menu entry identifier for the given deposit quantity.
-     * Sourced from RuneLite's ShiftDepositMode enum (standard bank column).
-     *
-     * id=2: Deposit-1 (CC_OP)     — identifier column in ShiftDepositMode: 3 for standard bank
-     * id=3: Deposit-5 (CC_OP)
-     * id=4: Deposit-10 (CC_OP)
-     * id=6: Deposit-X dialog (CC_OP_LOW_PRIORITY)
-     * id=8: Deposit-All (CC_OP_LOW_PRIORITY)
-     *
-     * Note: ShiftDepositMode identifiers (3/4/5/6/8) are for the deposit box.
-     * Bank inventory panel uses identifiers 2/3/4/6/8 based on live testing.
+     * Returns the bank inventory menu entry identifier for the given deposit quantity.
+     * From live menu entry dump:
+     *   Deposit-1:   id=3 (CC_OP)
+     *   Deposit-5:   id=4 (CC_OP)
+     *   Deposit-10:  id=5 (CC_OP)
+     *   Deposit-X:   id=7 (CC_OP_LOW_PRIORITY)
+     *   Deposit-All: id=8 (CC_OP_LOW_PRIORITY)
+     * Note: id=6 is "Deposit-N" (last-used custom amount), NOT Deposit-X dialog.
      */
     private static int getDepositIdentifier(int quantity)
     {
-        if (quantity == 1) return 2;
-        if (quantity == 5) return 3;
-        if (quantity == 10) return 4;
+        if (quantity == 1) return 3;
+        if (quantity == 5) return 4;
+        if (quantity == 10) return 5;
         if (quantity == -1) return 8; // Deposit-All
-        return 6; // Deposit-X dialog
+        return 7; // Deposit-X dialog
     }
 
     /**
@@ -249,30 +197,46 @@ public class BankDepositAction
     }
 
     /**
-     * Polls until the chatbox accepts input (VarClientInt 5 != 0).
-     * For deposits, no search was active, so any non-zero value means the dialog opened.
+     * Detects the quantity input dialog opening by watching VarClientInt 5 transitions.
+     * VarcInt5 may be stale (nonzero) from a previous bank search or withdraw-X,
+     * so we detect transitions: 0→nonzero or value change, not just nonzero.
      */
     private static boolean waitForQuantityDialog(Client client, ClientThread clientThread, HumanSimulator human)
     {
+        int initialValue;
+        try
+        {
+            initialValue = ClientThreadRunner.runOnClientThread(clientThread, () -> client.getVarcIntValue(5));
+        }
+        catch (Throwable t) { initialValue = 0; }
+
         long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
-        int polls = 0;
+        boolean sawZero = (initialValue == 0);
+
         while (System.currentTimeMillis() < deadline)
         {
             try
             {
-                int inputType = ClientThreadRunner.runOnClientThread(clientThread,
-                    () -> client.getVarcIntValue(5));
-                if (inputType != 0)
+                int v = ClientThreadRunner.runOnClientThread(clientThread, () -> client.getVarcIntValue(5));
+                if (v == 0)
                 {
-                    System.out.println("[ClaudeBot] BankDeposit: quantity dialog detected (VarcInt5=" + inputType + " polls=" + polls + ")");
+                    sawZero = true;
+                }
+                else if (sawZero)
+                {
+                    System.out.println("[ClaudeBot] BankDeposit: quantity dialog open (VarcInt5=" + v + " after 0 transition)");
+                    return true;
+                }
+                else if (initialValue != 0 && v != initialValue)
+                {
+                    System.out.println("[ClaudeBot] BankDeposit: quantity dialog open (VarcInt5 " + initialValue + " -> " + v + ")");
                     return true;
                 }
             }
             catch (Throwable t) {}
-            polls++;
-            human.getTimingEngine().sleep(VERIFY_POLL_MS);
+            human.getTimingEngine().sleep(50);
         }
-        System.err.println("[ClaudeBot] BankDeposit: quantity dialog timed out after " + polls + " polls");
+        System.err.println("[ClaudeBot] BankDeposit: quantity dialog timed out (initial VarcInt5=" + initialValue + ")");
         return false;
     }
 
@@ -372,5 +336,43 @@ public class BankDepositAction
             human.getTimingEngine().sleep(VERIFY_POLL_MS);
         }
         return false;
+    }
+
+    /**
+     * If bank search is active (VarcInt5 != 0), click the search button to close it
+     * and wait for VarcInt5 to return to 0. This prevents stale search state from
+     * interfering with Deposit-X dialog detection.
+     */
+    private static void closeSearchIfActive(Client client, HumanSimulator human, ClientThread clientThread)
+    {
+        try
+        {
+            int v = ClientThreadRunner.runOnClientThread(clientThread, () -> client.getVarcIntValue(5));
+            if (v == 0) return;
+
+            java.awt.Point btn = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                Widget searchBtn = client.getWidget(BANK_SEARCH_GROUP, BANK_SEARCH_CHILD);
+                if (searchBtn == null || searchBtn.isHidden()) return null;
+                java.awt.Rectangle b = searchBtn.getBounds();
+                if (b == null) return null;
+                return new java.awt.Point((int) b.getCenterX(), (int) b.getCenterY());
+            });
+            if (btn != null)
+            {
+                human.moveAndClick(btn.x, btn.y);
+                // Wait for VarcInt5 to return to 0
+                long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
+                while (System.currentTimeMillis() < deadline)
+                {
+                    human.getTimingEngine().sleep(50);
+                    int cur = ClientThreadRunner.runOnClientThread(clientThread, () -> client.getVarcIntValue(5));
+                    if (cur == 0) return;
+                }
+            }
+        }
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] BankDeposit: closeSearch failed: " + t.getMessage());
+        }
     }
 }

@@ -69,18 +69,21 @@ public class BankMenuSwap
             if (entry.getType() == type && entry.getIdentifier() == id)
             {
                 // Promote CC_OP_LOW_PRIORITY to CC_OP so the game treats it as left-clickable
-                entry.setType(MenuAction.CC_OP);
+                if (type != MenuAction.CC_OP)
+                {
+                    entry.setType(MenuAction.CC_OP);
+                }
 
                 // Swap to last position (top of menu = left-click default)
                 if (i != entries.length - 1)
                 {
-                    entries[i] = entries[entries.length - 1];
+                    MenuEntry old = entries[entries.length - 1];
+                    entries[i] = old;
                     entries[entries.length - 1] = entry;
                 }
 
-                // Commit the modified array
                 menu.setMenuEntries(entries);
-                break;
+                return;
             }
         }
     }
