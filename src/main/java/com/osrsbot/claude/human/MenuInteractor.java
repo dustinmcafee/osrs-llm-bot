@@ -108,11 +108,10 @@ public class MenuInteractor
         Point entryPos = (Point) entryData[0];
         String matchedOption = (String) entryData[5];
 
-        // Move mouse to the entry position, then left-click.
-        // We use a real pixel click because client.menuAction() does not work
-        // for CC_OP actions (bank widget interactions like Deposit/Withdraw).
+        // Move mouse to the entry position in a straight line (no Bezier overshoot,
+        // which would exit the menu bounds and auto-close it), then left-click.
         System.out.println("[ClaudeBot] Menu: clicking '" + matchedOption + "' at (" + entryPos.x + "," + entryPos.y + ")");
-        human.moveMouse(entryPos.x, entryPos.y);
+        human.moveMouseStraight(entryPos.x, entryPos.y);
         human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
         human.click();
 

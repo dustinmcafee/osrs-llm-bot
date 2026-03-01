@@ -4,10 +4,12 @@ import com.osrsbot.claude.action.ActionResult;
 import com.osrsbot.claude.action.ActionType;
 import com.osrsbot.claude.action.BotAction;
 import com.osrsbot.claude.human.HumanSimulator;
+import com.osrsbot.claude.util.BankMenuSwap;
 import com.osrsbot.claude.util.ClientThreadRunner;
 import com.osrsbot.claude.util.ItemUtils;
 import net.runelite.api.Client;
 import net.runelite.api.InventoryID;
+import net.runelite.api.MenuAction;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
@@ -130,17 +132,17 @@ public class BankWithdrawAction
             return ActionResult.failure(ActionType.BANK_WITHDRAW, "Bank withdraw: " + status + " for " + itemName);
         }
 
-        // Phase 2a: Search for the item
         int qty = action.getQuantity();
         if (qty == 0) qty = 1; // Default to 1 when no quantity specified
 
-        System.out.println("[ClaudeBot] BankWithdraw: searching for '" + itemName + "' qty=" + qty);
+        System.out.println("[ClaudeBot] BankWithdraw: qty=" + qty + " for '" + itemName + "'");
 
-        // Click the search button, retry if search input doesn't activate
+        // Phase 2a: Search for the item
+        System.out.println("[ClaudeBot] BankWithdraw: searching for '" + itemName + "'");
+
         boolean searchActivated = false;
         for (int attempt = 0; attempt < SEARCH_CLICK_RETRIES; attempt++)
         {
-            // Re-fetch search button bounds each attempt (bank may have re-rendered)
             if (attempt > 0)
             {
                 System.out.println("[ClaudeBot] BankWithdraw: search retry attempt " + (attempt + 1));
@@ -174,16 +176,12 @@ public class BankWithdrawAction
                 "Bank withdraw: search bar did not activate for " + itemName);
         }
 
-        // Clear any stale search text from a previous search in this batch
         for (int i = 0; i < 20; i++)
         {
             human.pressKey(KeyEvent.VK_BACK_SPACE);
         }
-
-        // Type the item name
         human.typeText(itemName);
 
-        // Wait for the bank to filter and then find the item
         java.awt.Point itemPoint = waitForSearchResult(client, clientThread, itemUtils, itemName, human);
         if (itemPoint == null)
         {
@@ -192,58 +190,106 @@ public class BankWithdrawAction
                 "Bank withdraw: item not found after search for " + itemName);
         }
         System.out.println("[ClaudeBot] BankWithdraw: search found '" + itemName + "' at " + itemPoint);
-
-        // Let bank search results fully render before interacting
         human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
 
-        // Phase 2b: Set quantity mode and click the item to withdraw.
-        // For standard amounts (1, 5, 10, All) we click the mode button once then the item.
-        // For custom amounts (e.g. 14, 22) we decompose into standard amounts and click
-        // the item multiple times, avoiding the unreliable Withdraw-X dialog entirely.
-        // Item position stays stable during search mode since bank slots don't shift.
-        boolean needsDecomposition = isCustomQuantity(qty);
+        // Phase 2b: Withdraw the item.
+        // Standard quantities (1/5/10) use CC_OP menu entries → client.menuAction().
+        // Withdraw-All (id=7) and Withdraw-X (id=6) are CC_OP_LOW_PRIORITY, which
+        // client.menuAction() silently ignores. For these, we use the same mechanism as
+        // RuneLite's MenuEntrySwapper: promote to CC_OP + move to top in onPostMenuSort,
+        // then left-click so the game's normal input pipeline processes the swapped entry.
+        int withdrawId = getWithdrawIdentifier(qty);
+        MenuAction nativeType = getWithdrawNativeType(qty);
+        String withdrawOption = getWithdrawOption(qty);
 
-        if (!needsDecomposition)
+        System.out.println("[ClaudeBot] BankWithdraw: option='" + withdrawOption
+            + "' id=" + withdrawId + " nativeType=" + nativeType + " for '" + itemName + "'");
+
+        if (nativeType == MenuAction.CC_OP)
         {
-            // Standard quantity: one mode click + one item click
-            int qtyButtonChild = getQuantityButtonChild(qty);
-            clickQuantityButton(client, human, clientThread, qtyButtonChild);
-            human.moveAndClick(itemPoint.x, itemPoint.y);
+            // Standard quantity (1/5/10): fire directly via menuAction
+            human.moveMouse(itemPoint.x, itemPoint.y);
+            human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+
+            boolean actionFired;
+            try
+            {
+                actionFired = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    net.runelite.api.MenuEntry[] entries = client.getMenuEntries();
+                    if (entries == null) return false;
+                    for (net.runelite.api.MenuEntry entry : entries)
+                    {
+                        if (entry.getType() == MenuAction.CC_OP
+                            && entry.getIdentifier() == withdrawId)
+                        {
+                            System.out.println("[ClaudeBot] BankWithdraw: firing " + withdrawOption
+                                + " via menuAction (CC_OP id=" + withdrawId + ")");
+                            client.menuAction(
+                                entry.getParam0(), entry.getParam1(),
+                                MenuAction.CC_OP, entry.getIdentifier(),
+                                -1, entry.getOption(), entry.getTarget()
+                            );
+                            return true;
+                        }
+                    }
+                    System.err.println("[ClaudeBot] BankWithdraw: CC_OP id=" + withdrawId + " not found. Entries:");
+                    for (net.runelite.api.MenuEntry e : entries)
+                    {
+                        System.err.println("[ClaudeBot]   " + e.getOption() + " type=" + e.getType()
+                            + " id=" + e.getIdentifier());
+                    }
+                    return false;
+                });
+            }
+            catch (Throwable t)
+            {
+                System.err.println("[ClaudeBot] BankWithdraw: menuAction failed: " + t.getMessage());
+                actionFired = false;
+            }
+
+            if (!actionFired)
+            {
+                closeSearch(client, human, clientThread);
+                return ActionResult.failure(ActionType.BANK_WITHDRAW,
+                    "Bank withdraw: " + withdrawOption + " (id=" + withdrawId + ") not found for " + itemName);
+            }
         }
         else
         {
-            // Custom quantity: decompose into 10s, 5s, and 1s
-            System.out.println("[ClaudeBot] BankWithdraw: decomposing qty=" + qty + " into standard amounts");
-            int remaining = qty;
-            // Withdraw-10 passes
-            if (remaining >= 10)
+            // CC_OP_LOW_PRIORITY entry (Withdraw-All id=7, Withdraw-X id=6):
+            // Use PostMenuSort menu swap — promote to CC_OP + move to top, then left-click.
+            // This is the same mechanism RuneLite's MenuEntrySwapper uses.
+            System.out.println("[ClaudeBot] BankWithdraw: using menu swap for " + withdrawOption
+                + " (id=" + withdrawId + ", CC_OP_LOW_PRIORITY)");
+
+            BankMenuSwap.setPendingSwap(withdrawId, MenuAction.CC_OP_LOW_PRIORITY);
+            try
             {
-                clickQuantityButton(client, human, clientThread, 27); // child 27 = "10"
-                while (remaining >= 10)
-                {
-                    human.moveAndClick(itemPoint.x, itemPoint.y);
-                    human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
-                    remaining -= 10;
-                }
+                human.moveMouse(itemPoint.x, itemPoint.y);
+                // Wait for at least one PostMenuSort cycle to apply the swap
+                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+                human.click();
             }
-            // Withdraw-5 pass
-            if (remaining >= 5)
+            finally
             {
-                clickQuantityButton(client, human, clientThread, 25); // child 25 = "5"
-                human.moveAndClick(itemPoint.x, itemPoint.y);
-                human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
-                remaining -= 5;
+                // Clear swap after click is dispatched — the entry is already swapped
+                // in the current frame, so the click will use it
+                human.getTimingEngine().sleep(100);
+                BankMenuSwap.clearPendingSwap();
             }
-            // Withdraw-1 passes
-            if (remaining > 0)
+
+            // For Withdraw-X: dialog opens, type amount and Enter
+            if (qty != -1)
             {
-                clickQuantityButton(client, human, clientThread, 23); // child 23 = "1"
-                while (remaining > 0)
+                if (!waitForInputDialog(client, clientThread, human))
                 {
-                    human.moveAndClick(itemPoint.x, itemPoint.y);
-                    if (remaining > 1) human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
-                    remaining--;
+                    closeSearch(client, human, clientThread);
+                    return ActionResult.failure(ActionType.BANK_WITHDRAW,
+                        "Bank withdraw: quantity dialog did not open for " + itemName);
                 }
+                human.typeText(String.valueOf(qty));
+                human.getTimingEngine().sleep(human.getTimingEngine().nextClickDelay());
+                human.pressKey(KeyEvent.VK_ENTER);
             }
         }
 
@@ -398,7 +444,6 @@ public class BankWithdrawAction
 
     /**
      * Returns the right-click menu option string for the given quantity.
-     * OSRS bank menu options: Withdraw-1, Withdraw-5, Withdraw-10, Withdraw-All, Withdraw-X
      */
     private static String getWithdrawOption(int quantity)
     {
@@ -406,30 +451,41 @@ public class BankWithdrawAction
         if (quantity == 1) return "Withdraw-1";
         if (quantity == 5) return "Withdraw-5";
         if (quantity == 10) return "Withdraw-10";
-        return "Withdraw-X"; // any other quantity uses Withdraw-X + type number
-    }
-
-    private static boolean isCustomQuantity(int quantity)
-    {
-        return quantity != -1 && quantity != 1 && quantity != 5 && quantity != 10;
+        return "Withdraw-X";
     }
 
     /**
-     * Maps the requested quantity to the bank's quantity selector button widget child ID.
-     * Widget group 12:
-     *   child 23 = "1"
-     *   child 25 = "5"
-     *   child 27 = "10"
-     *   child 29 = "X" (custom)
-     *   child 31 = "All"
+     * Returns the bank menu entry identifier for the given quantity.
+     * These identifiers match the CC_OP/CC_OP_LOW_PRIORITY entries on bank item widgets.
+     * Sourced from RuneLite's ShiftWithdrawMode enum.
+     *
+     * id=2: Withdraw-1 (CC_OP)
+     * id=3: Withdraw-5 (CC_OP)
+     * id=4: Withdraw-10 (CC_OP)
+     * id=6: Withdraw-X dialog (CC_OP_LOW_PRIORITY) — opens quantity input
+     * id=7: Withdraw-All (CC_OP_LOW_PRIORITY)
      */
-    private static int getQuantityButtonChild(int quantity)
+    private static int getWithdrawIdentifier(int quantity)
     {
-        if (quantity == 1) return 23;
-        if (quantity == 5) return 25;
-        if (quantity == 10) return 27;
-        if (quantity == -1) return 31; // All
-        return 29; // X (custom quantity — requires typing)
+        if (quantity == 1) return 2;
+        if (quantity == 5) return 3;
+        if (quantity == 10) return 4;
+        if (quantity == -1) return 7; // Withdraw-All
+        return 6; // Withdraw-X dialog
+    }
+
+    /**
+     * Returns the native MenuAction type for the given withdraw quantity.
+     * Identifiers 2-5 are CC_OP (directly invokable via client.menuAction).
+     * Identifiers 6+ are CC_OP_LOW_PRIORITY (need PostMenuSort swap + left-click).
+     */
+    private static MenuAction getWithdrawNativeType(int quantity)
+    {
+        if (quantity == 1 || quantity == 5 || quantity == 10)
+        {
+            return MenuAction.CC_OP;
+        }
+        return MenuAction.CC_OP_LOW_PRIORITY;
     }
 
     /**
@@ -561,5 +617,71 @@ public class BankWithdrawAction
         }
         System.err.println("[ClaudeBot] BankWithdraw: search activation timed out after " + polls + " polls");
         return false;
+    }
+
+    /**
+     * Detects the quantity input dialog opening by watching VarClientInt 5 transitions.
+     * When bank search is active, VarClientInt 5 is already non-zero, so we can't just
+     * check != 0. Instead we detect: value → 0 → non-zero (search closed, dialog opened)
+     * or value changing to a different non-zero number (direct transition).
+     */
+    private static boolean waitForInputDialog(Client client, ClientThread clientThread, HumanSimulator human)
+    {
+        int initialValue;
+        try
+        {
+            initialValue = ClientThreadRunner.runOnClientThread(clientThread, () -> client.getVarcIntValue(5));
+        }
+        catch (Throwable t) { initialValue = 0; }
+
+        long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
+        boolean sawZero = (initialValue == 0);
+
+        while (System.currentTimeMillis() < deadline)
+        {
+            try
+            {
+                int v = ClientThreadRunner.runOnClientThread(clientThread, () -> client.getVarcIntValue(5));
+                if (v == 0)
+                {
+                    sawZero = true;
+                }
+                else if (sawZero)
+                {
+                    // 0 → non-zero: dialog opened after search closed
+                    System.out.println("[ClaudeBot] BankWithdraw: input dialog open (VarcInt5=" + v + " after 0 transition)");
+                    return true;
+                }
+                else if (initialValue != 0 && v != initialValue)
+                {
+                    // Value changed without going through 0: direct transition
+                    System.out.println("[ClaudeBot] BankWithdraw: input dialog open (VarcInt5 " + initialValue + " → " + v + ")");
+                    return true;
+                }
+            }
+            catch (Throwable t) {}
+            human.getTimingEngine().sleep(50); // poll fast for transitions
+        }
+        System.err.println("[ClaudeBot] BankWithdraw: input dialog did not open (initial=" + initialValue + " sawZero=" + sawZero + ")");
+        return false;
+    }
+
+    /**
+     * Polls until the chatbox input closes (VarClientInt 5 == 0).
+     * Used after pressing Enter on a quantity dialog to wait for it to dismiss.
+     */
+    private static void waitForInputClosed(Client client, ClientThread clientThread, HumanSimulator human)
+    {
+        long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline)
+        {
+            try
+            {
+                int v = ClientThreadRunner.runOnClientThread(clientThread, () -> client.getVarcIntValue(5));
+                if (v == 0) return;
+            }
+            catch (Throwable t) {}
+            human.getTimingEngine().sleep(VERIFY_POLL_MS);
+        }
     }
 }

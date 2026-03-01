@@ -20,6 +20,8 @@ import net.runelite.api.Hitsplat;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.HitsplatApplied;
+import net.runelite.api.events.PostMenuSort;
+import com.osrsbot.claude.util.BankMenuSwap;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -238,6 +240,13 @@ public class ClaudeBotPlugin extends Plugin
                 gameStateReader.onPlayerHitsplat();
             }
         }
+    }
+
+    @Subscribe
+    public void onPostMenuSort(PostMenuSort event)
+    {
+        if (client.isMenuOpen()) return;
+        BankMenuSwap.processSwap(client);
     }
 
     @Subscribe

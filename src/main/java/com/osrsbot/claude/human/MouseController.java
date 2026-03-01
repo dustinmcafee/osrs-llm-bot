@@ -131,6 +131,46 @@ public class MouseController
         currentY = targetY;
     }
 
+    /**
+     * Moves the mouse in a straight line with no Bezier overshoot.
+     * Used for right-click menu selections where overshoot would exit menu bounds.
+     */
+    public void moveToStraight(int x, int y)
+    {
+        if (canvas == null) return;
+
+        int targetX = Math.max(0, Math.min(x, canvas.getWidth() - 1));
+        int targetY = Math.max(0, Math.min(y, canvas.getHeight() - 1));
+
+        if (!enteredCanvas)
+        {
+            currentX = canvas.getWidth() / 2;
+            currentY = canvas.getHeight() / 2;
+            postEvent(new MouseEvent(
+                canvas, MouseEvent.MOUSE_ENTERED, System.currentTimeMillis(),
+                0, currentX, currentY, 0, false
+            ));
+            enteredCanvas = true;
+        }
+
+        double dist = Math.hypot(targetX - currentX, targetY - currentY);
+        int steps = Math.max(3, (int)(dist / 15));
+        for (int i = 1; i <= steps; i++)
+        {
+            double t = (double) i / steps;
+            int px = currentX + (int)((targetX - currentX) * t);
+            int py = currentY + (int)((targetY - currentY) * t);
+            postEvent(new MouseEvent(
+                canvas, MouseEvent.MOUSE_MOVED, System.currentTimeMillis(),
+                0, px, py, 0, false
+            ));
+            sleep(5 + random.nextInt(10));
+        }
+
+        currentX = targetX;
+        currentY = targetY;
+    }
+
     public void click()
     {
         dispatchClick(MouseEvent.BUTTON1, InputEvent.BUTTON1_DOWN_MASK);

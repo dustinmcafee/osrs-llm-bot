@@ -25,7 +25,7 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, readFileSync, existsSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,6 +58,16 @@ let sessionId = randomUUID();
 let sessionInitialized = false;
 let sessionSystemPrompt = null;  // Cached from first request
 let sessionTurnCount = 0;
+
+// ─── Manual Override State ───────────────────────────────────────────────────
+
+/** Manual mode: proxy writes game state to file, blocks until response file appears.
+ *  Enable with MANUAL_MODE=1 env var. */
+const MANUAL_MODE = process.env.MANUAL_MODE === '1';
+const MANUAL_STATE_FILE = '/tmp/bot_pending_state.txt';
+const MANUAL_RESPONSE_FILE = '/tmp/bot_response.txt';
+const MANUAL_POLL_MS = 500;
+const MANUAL_TIMEOUT_MS = 300_000; // 5 minutes to respond
 
 // ─── Active subprocess tracking (for cleanup on shutdown) ─────────────────────
 
@@ -329,6 +339,65 @@ function callClaude(systemPrompt, prompt, model, signal) {
   });
 }
 
+// ─── Manual Mode (file-based handoff to Claude Code session) ─────────────────
+
+/**
+ * In manual mode, writes the game state to a file and polls until a response
+ * file appears. This lets the current Claude Code session be the bot's brain:
+ *   1. Proxy writes game state → /tmp/bot_pending_state.txt
+ *   2. Claude Code reads it, analyzes, writes response → /tmp/bot_response.txt
+ *   3. Proxy picks up response, deletes both files, returns to bot
+ */
+function callManual(systemPrompt, prompt) {
+  return new Promise((resolve, reject) => {
+    // Clean up any stale response file
+    try { unlinkSync(MANUAL_RESPONSE_FILE); } catch {}
+
+    // Write game state for Claude Code to read
+    const statePayload = JSON.stringify({
+      turn: sessionTurnCount,
+      session: sessionId,
+      system_prompt: sessionInitialized ? '(unchanged)' : systemPrompt,
+      game_state: prompt,
+      ts: new Date().toISOString(),
+    }, null, 2);
+    writeFileSync(MANUAL_STATE_FILE, statePayload);
+    log('info', 'Manual mode: wrote game state, waiting for response...', {
+      stateFile: MANUAL_STATE_FILE,
+      responseFile: MANUAL_RESPONSE_FILE,
+    });
+
+    if (!sessionInitialized) {
+      sessionSystemPrompt = systemPrompt;
+      sessionInitialized = true;
+    }
+    sessionTurnCount++;
+
+    // Poll for response file
+    const deadline = Date.now() + MANUAL_TIMEOUT_MS;
+    const timer = setInterval(() => {
+      if (Date.now() > deadline) {
+        clearInterval(timer);
+        reject(new Error('Manual mode: response timeout (5 min)'));
+        return;
+      }
+      try {
+        if (existsSync(MANUAL_RESPONSE_FILE)) {
+          const response = readFileSync(MANUAL_RESPONSE_FILE, 'utf-8').trim();
+          if (response.length > 0) {
+            clearInterval(timer);
+            // Clean up files
+            try { unlinkSync(MANUAL_RESPONSE_FILE); } catch {}
+            try { unlinkSync(MANUAL_STATE_FILE); } catch {}
+            log('info', 'Manual mode: got response', { chars: response.length });
+            resolve({ resultText: response, costUsd: 0 });
+          }
+        }
+      } catch {}
+    }, MANUAL_POLL_MS);
+  });
+}
+
 // ─── Response Helpers ─────────────────────────────────────────────────────────
 
 function sendJson(res, statusCode, body) {
@@ -464,13 +533,13 @@ async function handleChatCompletion(req, res) {
     log('debug', 'Request prompt', { prompt });
   }
 
-  // Queue the Claude call (AbortController kills subprocess on timeout)
+  // Route to manual mode or Claude CLI
   const ac = new AbortController();
-  const timeoutHandle = setTimeout(() => ac.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutHandle = setTimeout(() => ac.abort(), MANUAL_MODE ? MANUAL_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
   try {
-    const result = await requestQueue.enqueue(() => {
-      return callClaude(systemPrompt, prompt, model, ac.signal);
-    });
+    const result = MANUAL_MODE
+      ? await requestQueue.enqueue(() => callManual(systemPrompt, prompt))
+      : await requestQueue.enqueue(() => callClaude(systemPrompt, prompt, model, ac.signal));
 
     clearTimeout(timeoutHandle);
     const latencyMs = Date.now() - startTime;
@@ -665,14 +734,20 @@ process.on('unhandledRejection', (reason) => {
 server.listen(PORT, () => {
   console.log('');
   console.log('╔══════════════════════════════════════════════════════════');
-  console.log('║  OSRS Claude Proxy (Persistent Session)');
+  console.log(`║  OSRS Claude Proxy ${MANUAL_MODE ? '(MANUAL MODE)' : '(Persistent Session)'}`);
   console.log('╠══════════════════════════════════════════════════════════');
   console.log(`║  Port:      ${PORT}`);
-  console.log(`║  Model:     ${DEFAULT_MODEL}`);
+  console.log(`║  Model:     ${MANUAL_MODE ? 'MANUAL (Claude Code session)' : DEFAULT_MODEL}`);
   console.log(`║  Session:   ${sessionId.substring(0, 8)}...`);
   console.log(`║  Logging:   ${LOG_BODIES ? 'verbose (bodies)' : 'standard'}`);
   console.log(`║  Training:  ${TRAINING_LOG}`);
   console.log(`║  Wiki:      ${wikiContext ? `${(wikiContext.length / 1024).toFixed(0)} KB loaded` : 'none'}`);
+  if (MANUAL_MODE) {
+    console.log('╠══════════════════════════════════════════════════════════');
+    console.log(`║  State →    ${MANUAL_STATE_FILE}`);
+    console.log(`║  Response ← ${MANUAL_RESPONSE_FILE}`);
+    console.log(`║  Timeout:   ${MANUAL_TIMEOUT_MS / 1000}s per turn`);
+  }
   console.log('╠══════════════════════════════════════════════════════════');
   console.log(`║  Bot config: apiBaseUrl = http://localhost:${PORT}/v1`);
   console.log(`║  Health:     curl http://localhost:${PORT}/health`);

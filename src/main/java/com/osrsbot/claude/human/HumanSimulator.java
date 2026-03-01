@@ -71,6 +71,17 @@ public class HumanSimulator
         mouseController.moveTo(canvasX, canvasY);
     }
 
+    /**
+     * Moves the virtual mouse in a straight line (no Bezier curve, no overshoot).
+     * Used for right-click menu selections where Bezier overshoot would exit
+     * the menu bounds and cause it to auto-close.
+     */
+    public void moveMouseStraight(int canvasX, int canvasY)
+    {
+        if (!initialized) return;
+        mouseController.moveToStraight(canvasX, canvasY);
+    }
+
     public void click()
     {
         if (!initialized) return;
