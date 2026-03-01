@@ -329,6 +329,8 @@ public class ActionExecutor
                     objectUtils, clientThread, action);
             case WAIT_ANIMATION:
                 return WaitAnimationAction.execute(client, humanSimulator, clientThread, action);
+            case SET_AUTO_RETALIATE:
+                return SetAutoRetaliateAction.execute(client, humanSimulator, clientThread, action);
             default:
                 return ActionResult.failure(action.getType(), "Unimplemented action type");
         }

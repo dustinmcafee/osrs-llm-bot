@@ -72,6 +72,22 @@ public class EquipItemAction
         // Wait one game tick so inventory/equipment state refreshes before next action
         human.getTimingEngine().sleep(human.getTimingEngine().nextTickDelay());
 
+        // Phase 3: Verify the item left the inventory (i.e., was actually equipped)
+        try
+        {
+            boolean stillInInventory = ClientThreadRunner.runOnClientThread(clientThread,
+                () -> itemUtils.findInInventory(client, action.getName()) != null);
+            if (stillInInventory)
+            {
+                return ActionResult.failure(ActionType.EQUIP_ITEM,
+                    "Item still in inventory after clicking — may not meet level/quest requirements: " + action.getName());
+            }
+        }
+        catch (Throwable t)
+        {
+            // If verification fails, still report success since we clicked
+        }
+
         return ActionResult.success(ActionType.EQUIP_ITEM);
     }
 }

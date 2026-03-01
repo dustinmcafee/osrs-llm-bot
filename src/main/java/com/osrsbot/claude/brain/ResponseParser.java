@@ -128,6 +128,10 @@ public class ResponseParser
         alias("TRAVEL", ActionType.PATH_TO, null);
         alias("WAIT_ANIM", ActionType.WAIT_ANIMATION, null);
         alias("WAIT_FOR_ANIMATION", ActionType.WAIT_ANIMATION, null);
+        alias("AUTO_RETALIATE", ActionType.SET_AUTO_RETALIATE, null);
+        alias("TOGGLE_AUTO_RETALIATE", ActionType.SET_AUTO_RETALIATE, null);
+        alias("TOGGLE_RETALIATE", ActionType.SET_AUTO_RETALIATE, null);
+        alias("AUTORET", ActionType.SET_AUTO_RETALIATE, null);
     }
 
     private static void alias(String name, ActionType type, String defaultOption)
@@ -262,7 +266,7 @@ public class ResponseParser
                                     + "\" in " + obj + ". Valid actions: INTERACT_OBJECT, INTERACT_NPC, PATH_TO, "
                                     + "MAKE_ITEM, EAT_FOOD, PICKUP_ITEM, DROP_ITEM, EQUIP_ITEM, "
                                     + "BANK_WITHDRAW, BANK_DEPOSIT, BANK_CLOSE, WAIT, WAIT_ANIMATION, "
-                                    + "USE_ITEM_ON_OBJECT, PRESS_KEY, CAST_SPELL, TOGGLE_RUN. "
+                                    + "USE_ITEM_ON_OBJECT, PRESS_KEY, CAST_SPELL, TOGGLE_RUN, SET_AUTO_RETALIATE. "
                                     + "For smelting/cooking: use INTERACT_OBJECT(Furnace/Range) to open interface, then MAKE_ITEM to select what to make. "
                                     + "Use \"name\" for the target and \"option\" for the verb (e.g. Mine, Attack, Pick).";
                                 System.err.println("[ClaudeBot] " + err);

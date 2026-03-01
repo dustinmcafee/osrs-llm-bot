@@ -25,6 +25,7 @@ import random
 WIKI_RAW = "./data/wiki_raw.jsonl"
 GAMEPLAY_LOGS = "./data/gameplay_logs.jsonl"       # optional — real gameplay logs
 SYNTHETIC_GAMEPLAY = "./data/synthetic_gameplay.jsonl"  # from generate_gameplay_data.py
+AUTO_RETALIATE_DATA = "./data/auto_retaliate_training.jsonl"  # auto-retaliate training sequences
 EXAMPLE_DATA = "./example_data.jsonl"              # 12 hand-crafted gold examples
 
 # Output
@@ -201,6 +202,22 @@ def main():
         print(f"  {synthetic_count} synthetic gameplay examples added")
     else:
         print(f"No synthetic data found at {SYNTHETIC_GAMEPLAY} (run generate_gameplay_data.py first)")
+
+    # Process auto-retaliate training data
+    autoret_count = 0
+    if os.path.exists(AUTO_RETALIATE_DATA):
+        print(f"Processing auto-retaliate training from {AUTO_RETALIATE_DATA}...")
+        with open(AUTO_RETALIATE_DATA, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                example = json.loads(line)
+                all_examples.append(example)
+                autoret_count += 1
+        print(f"  {autoret_count} auto-retaliate examples added")
+    else:
+        print(f"No auto-retaliate data found at {AUTO_RETALIATE_DATA} (optional)")
 
     # Process hand-crafted example data
     example_count = 0

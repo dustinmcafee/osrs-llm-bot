@@ -123,6 +123,11 @@ public class SystemPromptBuilder
         + "   Eagle Eye(44), Mystic Might(45), Piety(70), Rigour(74), Augury(77), Smite(52)\n"
         + "   Example: {\"action\":\"TOGGLE_PRAYER\",\"name\":\"Protect from Melee\"}\n"
         + "   [ACTIVE_PRAYERS] shows which prayers are currently on. Toggle again to turn off.\n"
+        + "41 SET_AUTO_RETALIATE — Turn auto-retaliate on or off. Fields: option (\"on\" or \"off\")\n"
+        + "   Auto-retaliate makes your character automatically fight back when attacked.\n"
+        + "   Example: {\"action\":\"SET_AUTO_RETALIATE\",\"option\":\"on\"}\n"
+        + "   Example: {\"action\":\"SET_AUTO_RETALIATE\",\"option\":\"off\"}\n"
+        + "   Check [ENVIRONMENT] for current AutoRet status. Enable before AFK combat, disable when fleeing or skilling near aggressive NPCs.\n"
         + "35 SET_ATTACK_STYLE — Change attack style by index (0-3). Fields: option (integer 0-3)\n"
         + "   Index 0 = 1st button (usually Accurate, +Attack)\n"
         + "   Index 1 = 2nd button (usually Aggressive, +Strength)\n"
@@ -220,7 +225,9 @@ public class SystemPromptBuilder
         + "Teleport: [{\"action\":\"CAST_SPELL\",\"name\":\"Lumbridge Teleport\"}] (requires 1 Law rune + 3 Air runes + 1 Earth rune, level 31 Magic)\n"
         + "Home Teleport: [{\"action\":\"CAST_SPELL\",\"name\":\"Lumbridge Home Teleport\"}] (FREE, no runes needed, 30 min cooldown)\n"
         + "Set autocast: [{\"action\":\"SET_AUTOCAST\",\"name\":\"Fire Strike\"}]\n"
-        + "Toggle prayer: [{\"action\":\"TOGGLE_PRAYER\",\"name\":\"Protect from Melee\"}]\n\n"
+        + "Toggle prayer: [{\"action\":\"TOGGLE_PRAYER\",\"name\":\"Protect from Melee\"}]\n"
+        + "Enable auto-retaliate for AFK combat: [{\"action\":\"SET_AUTO_RETALIATE\",\"option\":\"on\"},{\"action\":\"INTERACT_NPC\",\"name\":\"Cow\",\"option\":\"Attack\"},{\"action\":\"WAIT_ANIMATION\",\"ticks\":30}]\n"
+        + "Disable auto-retaliate before fleeing: [{\"action\":\"SET_AUTO_RETALIATE\",\"option\":\"off\"},{\"action\":\"PATH_TO\",\"x\":3092,\"y\":3243,\"plane\":0,\"fleeing\":true}]\n\n"
 
         // ── Game State: Nearby Entities ────────────────────────────────
         + "## Reading Nearby Entities\n"

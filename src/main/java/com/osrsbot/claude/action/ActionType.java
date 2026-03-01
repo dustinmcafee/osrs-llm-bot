@@ -44,7 +44,8 @@ public enum ActionType
     WORLD_HOP(37),
     PATH_TO(38),
     WAIT_ANIMATION(39),
-    CLEAR_ACTION_QUEUE(40);
+    CLEAR_ACTION_QUEUE(40),
+    SET_AUTO_RETALIATE(41);
 
     private final int id;
 
