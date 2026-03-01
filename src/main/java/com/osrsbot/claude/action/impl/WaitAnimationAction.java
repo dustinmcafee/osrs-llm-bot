@@ -8,8 +8,6 @@ import com.osrsbot.claude.human.HumanSimulator;
 import com.osrsbot.claude.util.ClientThreadRunner;
 import net.runelite.api.*;
 import net.runelite.api.coords.LocalPoint;
-import net.runelite.api.widgets.Widget;
-import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
 
 /**
@@ -127,10 +125,37 @@ public class WaitAnimationAction
                 }
                 else if (System.currentTimeMillis() > startGraceDeadline)
                 {
-                    // Never started animating within the grace period — fail fast
-                    return ActionResult.failure(ActionType.WAIT_ANIMATION,
-                        "Player never started animating (waited " + START_GRACE_TICKS + " ticks). "
-                        + "The preceding action may have failed or the target may be unavailable.");
+                    // Check if the player is still moving (walking to target) —
+                    // if so, extend the grace period instead of failing
+                    boolean isMoving = false;
+                    try
+                    {
+                        isMoving = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                            Player local = client.getLocalPlayer();
+                            if (local == null) return false;
+                            LocalPoint dest = local.getLocalLocation();
+                            // Player is moving if their path target differs from current position
+                            // or if the pose animation indicates walking
+                            int poseAnim = local.getPoseAnimation();
+                            return poseAnim == local.getWalkAnimation()
+                                || poseAnim == local.getRunAnimation();
+                        });
+                    }
+                    catch (Throwable t) {}
+
+                    if (isMoving)
+                    {
+                        // Still walking — extend grace period, don't fail yet
+                        startGraceDeadline = System.currentTimeMillis()
+                            + ((long) START_GRACE_TICKS * MS_PER_TICK);
+                    }
+                    else
+                    {
+                        // Truly idle, never started animating — fail fast
+                        return ActionResult.failure(ActionType.WAIT_ANIMATION,
+                            "Player never started animating (waited " + START_GRACE_TICKS + " ticks). "
+                            + "The preceding action may have failed or the target may be unavailable.");
+                    }
                 }
             }
             catch (Throwable t)
@@ -340,18 +365,19 @@ public class WaitAnimationAction
     }
 
     /**
-     * Count total occupied inventory slots.
+     * Count total occupied inventory slots using ItemContainer (reliable even when
+     * inventory tab is not open, unlike the widget approach which returns stale data).
      */
     private static int countInventoryItems(Client client)
     {
-        Widget inventory = client.getWidget(WidgetInfo.INVENTORY);
-        if (inventory == null) return 0;
+        ItemContainer container = client.getItemContainer(InventoryID.INVENTORY);
+        if (container == null) return 0;
         int count = 0;
-        Widget[] children = inventory.getDynamicChildren();
-        if (children == null) return 0;
-        for (Widget child : children)
+        Item[] items = container.getItems();
+        if (items == null) return 0;
+        for (Item item : items)
         {
-            if (child.getItemId() > 0) count++;
+            if (item != null && item.getId() > 0 && item.getId() != -1) count++;
         }
         return count;
     }

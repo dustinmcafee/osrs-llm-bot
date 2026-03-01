@@ -6,6 +6,7 @@ import com.osrsbot.claude.action.BotAction;
 import com.osrsbot.claude.human.HumanSimulator;
 import com.osrsbot.claude.util.ClientThreadRunner;
 import net.runelite.api.Client;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
@@ -98,18 +99,13 @@ public class DialogueAction
         return ActionResult.success(ActionType.SELECT_DIALOGUE);
     }
 
-    // All dialog widget groups that have a "Click here to continue" button
-    // Each entry: {groupId, childId} — we try them all until one works
-    private static final int[][] CONTINUE_WIDGETS = {
-        {231, 5},  // CHAT_LEFT — NPC dialogue
-        {217, 5},  // CHAT_RIGHT — Player dialogue
-        {60, 5},   // CHAT_BOTH — Both heads dialogue
-        {229, 2},  // MESSAGEBOX — Plain text message
-        {193, 2},  // OBJECTBOX — Sprite/item dialog ("You receive...")
-        {11, 2},   // OBJECTBOX_DOUBLE — Double sprite dialog
-        {220, 3},  // MESSAGESCROLL — Scrollable quest text / signs / books
-        {221, 3},  // MESSAGESCROLL2 — Secondary message scroll
-        {222, 3},  // MESSAGESCROLL_HANDWRITING — Quest letters/notes
+    // Continue button packed component IDs from RuneLite's InterfaceID.
+    // Each dialog type has a specific CONTINUE widget.
+    private static final int[] CONTINUE_WIDGETS = {
+        InterfaceID.ChatLeft.CONTINUE,        // NPC dialogue (group 231, child 5)
+        InterfaceID.ChatRight.CONTINUE,       // Player dialogue (group 217, child 5)
+        InterfaceID.ChatBoth.CONTINUE,        // Both heads dialogue (group 60, child 6)
+        InterfaceID.Messagebox.CONTINUE,      // Plain text message (group 229, child 4)
     };
 
     public static ActionResult executeContinue(Client client, HumanSimulator human, ClientThread clientThread)
@@ -119,9 +115,10 @@ public class DialogueAction
         try
         {
             point = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                for (int[] widgetDef : CONTINUE_WIDGETS)
+                // Try each known continue widget
+                for (int packedId : CONTINUE_WIDGETS)
                 {
-                    Widget w = client.getWidget(widgetDef[0], widgetDef[1]);
+                    Widget w = client.getWidget(packedId);
                     if (w != null && !w.isHidden())
                     {
                         java.awt.Rectangle bounds = w.getBounds();
@@ -131,15 +128,15 @@ public class DialogueAction
                         }
                     }
                 }
-                // Also search for any widget with "Click here to continue" text/action
-                for (int[] widgetDef : CONTINUE_WIDGETS)
+                // Fallback: search for any widget with "Click here to continue" text
+                int[][] searchGroups = {
+                    {231, 10}, {217, 10}, {60, 10}, {229, 10}, {193, 10}, {11, 10},
+                };
+                for (int[] group : searchGroups)
                 {
-                    Widget root = client.getWidget(widgetDef[0], 0);
-                    if (root == null || root.isHidden()) continue;
-                    // Search children for continue text
-                    for (int childIdx = 0; childIdx < 10; childIdx++)
+                    for (int childIdx = 0; childIdx < group[1]; childIdx++)
                     {
-                        Widget child = client.getWidget(widgetDef[0], childIdx);
+                        Widget child = client.getWidget(group[0], childIdx);
                         if (child == null || child.isHidden()) continue;
                         String text = child.getText();
                         if (text != null && text.toLowerCase().contains("click here to continue"))
@@ -158,7 +155,6 @@ public class DialogueAction
         catch (Throwable t)
         {
             System.err.println("[ClaudeBot] Continue dialogue lookup failed: " + t.getMessage());
-            // Fallback: press space (advances most OSRS dialogs)
             human.pressKey(java.awt.event.KeyEvent.VK_SPACE);
             return ActionResult.success(ActionType.CONTINUE_DIALOGUE);
         }

@@ -60,6 +60,25 @@ public class EnvironmentState
     private int attackStyleIndex;
     private String attackStyleName;
 
+    // Auto-retaliate toggle
+    private boolean autoRetaliate;
+
+    // Quest points total
+    private int questPoints;
+
+    // Slayer task (0 = no task)
+    private int slayerTaskId;
+    private int slayerTaskCount;
+
+    // Spellbook: 0=Standard, 1=Ancient, 2=Lunar, 3=Arceuus
+    private int spellbookType;
+
+    // Skull status (PvP)
+    private boolean isSkulled;
+
+    // Boosted/drained non-combat skills (e.g. "Mine+3", "WC-2")
+    private List<String> boostedSkills;
+
     // Currently active prayers
     private List<String> activePrayers;
 
@@ -75,4 +94,7 @@ public class EnvironmentState
 
     // Grand Exchange active offers — "BUY/SELL ItemName qty/total @price" strings
     private List<String> geOffers;
+
+    // Make interface items (when make/craft/smelt interface is open) — item names the player can choose
+    private List<String> makeInterfaceItems;
 }

@@ -82,6 +82,9 @@ public class ClaudeBotPlugin extends Plugin
     @Inject
     private com.osrsbot.claude.pathfinder.PathfinderService pathfinderService;
 
+    @Inject
+    private ConfigManager configManager;
+
     private int tickCounter = 0;
     private final AtomicBoolean awaitingResponse = new AtomicBoolean(false);
     private volatile boolean active = false;
@@ -351,6 +354,16 @@ public class ClaudeBotPlugin extends Plugin
         if (!sessionNotes.isEmpty())
         {
             serialized = "[SESSION_NOTES] Summary of earlier activity:\n" + sessionNotes + "\n" + serialized;
+        }
+
+        // Inject user nudge if present, then auto-clear
+        String nudge = config.nudge();
+        if (nudge != null && !nudge.trim().isEmpty())
+        {
+            serialized = "[USER_NUDGE] The user wants you to: " + nudge.trim() + "\n"
+                + "Acknowledge this nudge and adjust your plan accordingly. This is a one-time instruction.\n"
+                + serialized;
+            configManager.setConfiguration("claudebot", "nudge", "");
         }
 
         final String gameState = serialized;

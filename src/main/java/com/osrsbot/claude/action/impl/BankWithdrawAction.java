@@ -8,6 +8,7 @@ import com.osrsbot.claude.util.ClientThreadRunner;
 import com.osrsbot.claude.util.ItemUtils;
 import net.runelite.api.Client;
 import net.runelite.api.InventoryID;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
@@ -522,8 +523,8 @@ public class BankWithdrawAction
                     int inputType = client.getVarcIntValue(5);
                     if (inputType != 0) return new int[]{1, inputType};
 
-                    // Fallback: check bank search input widget (group 12, child 80 — the text input area)
-                    Widget searchInput = client.getWidget(12, 80);
+                    // Fallback: check bank search button
+                    Widget searchInput = client.getWidget(InterfaceID.Bankmain.SEARCH);
                     if (searchInput != null && !searchInput.isHidden())
                     {
                         return new int[]{1, -1};

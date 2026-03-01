@@ -3,6 +3,7 @@ package com.osrsbot.claude.state;
 import net.runelite.api.*;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.game.ItemManager;
@@ -775,6 +776,25 @@ public class GameStateReader
         // Attack style (VarPlayer 43): 0-3 maps to combat style buttons
         int attackStyleIndex = client.getVarpValue(43);
 
+        // Auto-retaliate (VarPlayer 172): 0 = on, 1 = off
+        boolean autoRetaliate = client.getVarpValue(172) == 0;
+
+        // Quest points (VarPlayer 101)
+        int questPoints = client.getVarpValue(101);
+
+        // Slayer task (varbit 394 = NPC ID, varbit 395 = remaining count)
+        int slayerTaskId = client.getVarbitValue(394);
+        int slayerTaskCount = client.getVarbitValue(395);
+
+        // Spellbook type (varbit 4070): 0=Standard, 1=Ancient, 2=Lunar, 3=Arceuus
+        int spellbookType = client.getVarbitValue(4070);
+
+        // Skull status (VarPlayer 607): 0 = not skulled, >0 = skulled
+        boolean isSkulled = client.getVarpValue(607) > 0;
+
+        // All boosted skill levels (report any non-combat boosts/drains)
+        List<String> boostedSkills = readBoostedSkills(local);
+
         // Active prayers — search prayer widget actions for "Deactivate" prefix
         List<String> activePrayers = readActivePrayers();
 
@@ -783,6 +803,13 @@ public class GameStateReader
 
         // Region name lookup
         String regionName = REGION_NAMES.getOrDefault(regionId, null);
+
+        // Make interface items (when make/craft/smelt interface is open)
+        List<String> makeInterfaceItems = null;
+        if (isMakeOpen)
+        {
+            makeInterfaceItems = readMakeInterfaceItems();
+        }
 
         // Shop contents (when shop is open)
         List<String> shopContents = null;
@@ -853,13 +880,129 @@ public class GameStateReader
             .poisonStatus(poisonStatus)
             .attackStyleIndex(attackStyleIndex)
             .attackStyleName(getAttackStyleName(attackStyleIndex))
+            .autoRetaliate(autoRetaliate)
+            .questPoints(questPoints)
+            .slayerTaskId(slayerTaskId)
+            .slayerTaskCount(slayerTaskCount)
+            .spellbookType(spellbookType)
+            .isSkulled(isSkulled)
+            .boostedSkills(boostedSkills)
             .activePrayers(activePrayers)
             .attackingNpcs(attackingNpcs)
             .bankContents(bankContents)
             .bankUniqueItems(bankUniqueItems)
             .shopContents(shopContents)
             .geOffers(geOffers)
+            .makeInterfaceItems(makeInterfaceItems)
             .build();
+    }
+
+    /**
+     * Reads the available item names from the make/craft/smelt interface.
+     * Searches widget groups 270 (SKILLMULTI), 312 (SMITHING), 446 (CRAFTING_GOLD)
+     * for widgets with item names (via getName(), getText(), or itemId composition).
+     */
+    private List<String> readMakeInterfaceItems()
+    {
+        List<String> items = new ArrayList<>();
+        int[] makeGroups = { 270, 312, 446, 6, 324, 140 };
+        try
+        {
+            for (int groupId : makeGroups)
+            {
+                Widget root = client.getWidget(groupId, 0);
+                if (root == null || root.isHidden()) continue;
+
+                for (int childIdx = 0; childIdx < 50; childIdx++)
+                {
+                    Widget child = client.getWidget(groupId, childIdx);
+                    if (child == null || child.isHidden()) continue;
+
+                    // Check widget name (most common: "<col=ff9040>Cooked meat</col>...")
+                    String name = child.getName();
+                    if (name != null)
+                    {
+                        String stripped = name.replaceAll("<[^>]+>", "").trim();
+                        if (!stripped.isEmpty() && !items.contains(stripped))
+                        {
+                            items.add(stripped);
+                        }
+                    }
+
+                    // Check item ID composition name
+                    if (child.getItemId() > 0)
+                    {
+                        try
+                        {
+                            net.runelite.api.ItemComposition comp = itemManager.getItemComposition(child.getItemId());
+                            if (comp != null && comp.getName() != null && !comp.getName().equals("null"))
+                            {
+                                if (!items.contains(comp.getName()))
+                                {
+                                    items.add(comp.getName());
+                                }
+                            }
+                        }
+                        catch (Throwable ignored) {}
+                    }
+
+                    // Search dynamic children (item sprites in containers)
+                    Widget[] dynChildren = child.getDynamicChildren();
+                    if (dynChildren != null)
+                    {
+                        for (Widget dyn : dynChildren)
+                        {
+                            if (dyn == null || dyn.isHidden()) continue;
+                            collectMakeItemName(dyn, items);
+                        }
+                    }
+
+                    // Search static children
+                    Widget[] statChildren = child.getStaticChildren();
+                    if (statChildren != null)
+                    {
+                        for (Widget stat : statChildren)
+                        {
+                            if (stat == null || stat.isHidden()) continue;
+                            collectMakeItemName(stat, items);
+                        }
+                    }
+                }
+
+                if (!items.isEmpty()) break; // Found items in this group, stop searching
+            }
+        }
+        catch (Throwable t)
+        {
+            // Make interface read failed — non-critical
+        }
+        return items.isEmpty() ? null : items;
+    }
+
+    private void collectMakeItemName(Widget w, List<String> items)
+    {
+        String name = w.getName();
+        if (name != null)
+        {
+            String stripped = name.replaceAll("<[^>]+>", "").trim();
+            if (!stripped.isEmpty() && !items.contains(stripped))
+            {
+                items.add(stripped);
+            }
+        }
+        if (w.getItemId() > 0)
+        {
+            try
+            {
+                net.runelite.api.ItemComposition comp = itemManager.getItemComposition(w.getItemId());
+                if (comp != null && comp.getName() != null && !comp.getName().equals("null")
+                    && !items.contains(comp.getName()))
+                {
+                    items.add(comp.getName());
+                }
+            }
+            catch (Throwable ignored) {}
+        }
     }
 
     /**
@@ -1057,7 +1200,7 @@ public class GameStateReader
         List<String> contents = new ArrayList<>();
         try
         {
-            Widget shopContainer = client.getWidget(300, 16);
+            Widget shopContainer = client.getWidget(InterfaceID.Shopmain.ITEMS);
             if (shopContainer == null || shopContainer.isHidden()) return contents;
 
             Widget[] children = shopContainer.getDynamicChildren();
@@ -1116,6 +1259,40 @@ public class GameStateReader
      * Searches prayer widget children for actions starting with "Deactivate"
      * to determine which prayers are currently active.
      */
+    /**
+     * Reads all boosted/drained non-combat skill levels.
+     * Returns e.g. ["Mine+3", "WC-2"] for skills where boosted != base.
+     * Combat skills (Atk/Str/Def/Rng/Mag) are already in PlayerState.
+     */
+    private List<String> readBoostedSkills(Player local)
+    {
+        if (local == null) return null;
+        List<String> boosts = new ArrayList<>();
+        Skill[] nonCombat = {
+            Skill.MINING, Skill.WOODCUTTING, Skill.FISHING, Skill.COOKING,
+            Skill.FIREMAKING, Skill.CRAFTING, Skill.SMITHING, Skill.FLETCHING,
+            Skill.SLAYER, Skill.FARMING, Skill.CONSTRUCTION, Skill.HUNTER,
+            Skill.AGILITY, Skill.THIEVING, Skill.HERBLORE, Skill.RUNECRAFT
+        };
+        String[] names = {
+            "Mine", "WC", "Fish", "Cook",
+            "FM", "Craft", "Smith", "Fletch",
+            "Slay", "Farm", "Con", "Hunt",
+            "Agi", "Thiev", "Herb", "RC"
+        };
+        for (int i = 0; i < nonCombat.length; i++)
+        {
+            int boosted = client.getBoostedSkillLevel(nonCombat[i]);
+            int base = client.getRealSkillLevel(nonCombat[i]);
+            if (boosted != base)
+            {
+                int diff = boosted - base;
+                boosts.add(names[i] + (diff > 0 ? "+" : "") + diff);
+            }
+        }
+        return boosts.isEmpty() ? null : boosts;
+    }
+
     private List<String> readActivePrayers()
     {
         List<String> active = new ArrayList<>();
@@ -1213,7 +1390,7 @@ public class GameStateReader
             info.text = stripTags(dialogNpc.getText());
 
             // Get NPC name from widget 231, child 4
-            Widget npcNameWidget = client.getWidget(231, 4);
+            Widget npcNameWidget = client.getWidget(InterfaceID.ChatLeft.NAME);
             if (npcNameWidget != null)
             {
                 info.speaker = stripTags(npcNameWidget.getText());
@@ -1262,8 +1439,8 @@ public class GameStateReader
             return info;
         }
 
-        // Check for chatbox "Click here to continue" sprite dialogue (group 229)
-        Widget spriteDialog = client.getWidget(229, 2);
+        // Check for chatbox "Click here to continue" message box
+        Widget spriteDialog = client.getWidget(InterfaceID.Messagebox.TEXT);
         if (spriteDialog != null && !spriteDialog.isHidden())
         {
             info.isOpen = true;

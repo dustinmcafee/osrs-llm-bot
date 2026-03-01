@@ -159,8 +159,9 @@ def main():
     else:
         print(f"No wiki data found at {WIKI_RAW} (run scrape_wiki.py first)")
 
-    # Process gameplay logs
+    # Process gameplay logs (high-priority reasoning turns get 3x weight)
     gameplay_count = 0
+    high_priority_count = 0
     if os.path.exists(GAMEPLAY_LOGS):
         print(f"Processing gameplay logs from {GAMEPLAY_LOGS}...")
         before = len(all_examples)
@@ -172,10 +173,15 @@ def main():
                 log_entry = json.loads(line)
                 example = format_gameplay_log(log_entry)
                 if example:
-                    all_examples.append(example)
+                    is_high = log_entry.get("priority") == "high"
+                    repeat = 3 if is_high else 1
+                    for _ in range(repeat):
+                        all_examples.append(example)
                     gameplay_count += 1
+                    if is_high:
+                        high_priority_count += 1
 
-        print(f"  {gameplay_count} gameplay examples added")
+        print(f"  {gameplay_count} gameplay examples added ({high_priority_count} high-priority, 3x weighted)")
     else:
         print(f"No gameplay logs found at {GAMEPLAY_LOGS} (optional — skipping)")
 

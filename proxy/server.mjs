@@ -25,6 +25,9 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { appendFileSync, readFileSync, existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -33,6 +36,21 @@ const DEFAULT_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 const REQUEST_TIMEOUT_MS = 110_000; // Under the bot's 120s read timeout
 const LOG_BODIES = process.env.LOG_BODIES === '1';
 const MAX_BODY_BYTES = 1_048_576; // 1MB max request body
+const TRAINING_LOG = process.env.TRAINING_LOG || '/tmp/training_turns.jsonl';
+
+// ─── Wiki Context (injected on first turn of each session) ───────────────────
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const WIKI_CONTEXT_PATH = process.env.WIKI_CONTEXT || resolve(__dirname, 'wiki_context.txt');
+let wikiContext = '';
+try {
+  if (existsSync(WIKI_CONTEXT_PATH)) {
+    wikiContext = readFileSync(WIKI_CONTEXT_PATH, 'utf-8');
+    console.log(`Loaded wiki context: ${(wikiContext.length / 1024).toFixed(0)} KB (~${Math.round(wikiContext.length / 4).toLocaleString()} tokens)`);
+  }
+} catch (e) {
+  console.warn(`Failed to load wiki context from ${WIKI_CONTEXT_PATH}: ${e.message}`);
+}
 
 // ─── Session State ────────────────────────────────────────────────────────────
 
@@ -158,6 +176,17 @@ function resetSession(reason) {
   sessionTurnCount = 0;
   stats.sessionResets++;
   log('warn', `Session reset: ${reason}`, { oldSessionId: oldId, newSessionId: sessionId });
+
+  // Mark session boundary in training log
+  try {
+    appendFileSync(TRAINING_LOG, JSON.stringify({
+      event: 'session_reset',
+      ts: new Date().toISOString(),
+      old_session: oldId,
+      new_session: sessionId,
+      reason,
+    }) + '\n');
+  } catch {}
 }
 
 // ─── Claude CLI Call ──────────────────────────────────────────────────────────
@@ -250,6 +279,19 @@ function callClaude(systemPrompt, prompt, model, signal) {
     // Handle stdin pipe errors (if claude exits before we write)
     proc.stdin.on('error', () => {}); // Swallowed — handled via proc close/error
 
+    // On the first turn of a session, prepend wiki context so Claude has
+    // comprehensive OSRS game knowledge for the entire session
+    if (!sessionInitialized && wikiContext) {
+      const contextPreamble = '[OSRS_WIKI_REFERENCE]\n'
+        + 'The following is a compressed reference of the Old School RuneScape wiki. '
+        + 'Use this knowledge to make informed decisions about game mechanics, items, '
+        + 'NPCs, locations, skills, and quests. Do NOT respond to this reference — '
+        + 'just absorb it and respond only to the [GAME STATE] that follows.\n\n'
+        + wikiContext
+        + '\n[/OSRS_WIKI_REFERENCE]\n\n';
+      proc.stdin.write(contextPreamble);
+      log('info', 'Wiki context injected', { chars: wikiContext.length });
+    }
     proc.stdin.write(prompt);
     proc.stdin.end();
 
@@ -398,7 +440,8 @@ async function handleChatCompletion(req, res) {
     return;
   }
 
-  const model = body.model || DEFAULT_MODEL;
+  // CLAUDE_MODEL env var overrides whatever the bot sends
+  const model = process.env.CLAUDE_MODEL || body.model || DEFAULT_MODEL;
 
   // Extract only the current game state (session has the history)
   const { systemPrompt, prompt } = extractCurrentMessage(messages);
@@ -447,6 +490,18 @@ async function handleChatCompletion(req, res) {
     }
 
     sendJson(res, 200, wrapResponse(result.resultText, model));
+
+    // Write structured training turn for distillation
+    try {
+      appendFileSync(TRAINING_LOG, JSON.stringify({
+        turn: sessionTurnCount,
+        ts: new Date().toISOString(),
+        session: sessionId,
+        game_state: prompt,
+        response: result.resultText,
+        latency_ms: latencyMs,
+      }) + '\n');
+    } catch {}
 
   } catch (error) {
     clearTimeout(timeoutHandle);
@@ -616,6 +671,8 @@ server.listen(PORT, () => {
   console.log(`║  Model:     ${DEFAULT_MODEL}`);
   console.log(`║  Session:   ${sessionId.substring(0, 8)}...`);
   console.log(`║  Logging:   ${LOG_BODIES ? 'verbose (bodies)' : 'standard'}`);
+  console.log(`║  Training:  ${TRAINING_LOG}`);
+  console.log(`║  Wiki:      ${wikiContext ? `${(wikiContext.length / 1024).toFixed(0)} KB loaded` : 'none'}`);
   console.log('╠══════════════════════════════════════════════════════════');
   console.log(`║  Bot config: apiBaseUrl = http://localhost:${PORT}/v1`);
   console.log(`║  Health:     curl http://localhost:${PORT}/health`);

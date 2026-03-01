@@ -54,7 +54,8 @@ public class GameStateSerializer
         // with the furnace/bank/shop/etc. and the "intended destination" is just a stale
         // walk target from clicking the object.
         boolean interfaceOpen = env != null && (env.isBankOpen() || env.isShopOpen()
-            || env.isMakeInterfaceOpen() || env.isGrandExchangeOpen());
+            || env.isMakeInterfaceOpen() || env.isGrandExchangeOpen()
+            || env.isDialogOpen());
 
         sb.append("[STATUS] ");
         if (p.isIdle())
@@ -227,29 +228,31 @@ public class GameStateSerializer
             NearbyEntity nearest = list.get(0); // already sorted by distance
 
             StringBuilder entry = new StringBuilder();
+            entry.append(group.getKey());
+
             if (list.size() > 1)
             {
-                // Deduplicated: "Oak tree(x4) nearest:pos(3100,3200) dist:3 [Chop down]"
-                entry.append(group.getKey()).append("(x").append(list.size()).append(")");
-                entry.append(" nearest:pos(").append(nearest.getWorldX()).append(",").append(nearest.getWorldY()).append(")");
-                entry.append(" dist:").append(nearest.getDistance());
+                entry.append("(x").append(list.size()).append(")");
             }
-            else
-            {
-                // Single entity: full detail
-                entry.append(group.getKey());
-                entry.append(" pos:(").append(nearest.getWorldX()).append(",").append(nearest.getWorldY()).append(")");
-                entry.append(" dist:").append(nearest.getDistance());
-            }
-            if (nearest.getQuantity() > 1) entry.append(" qty:").append(nearest.getQuantity());
-            if (nearest.getHealthRatio() > 0)
-            {
-                int pct = (nearest.getHealthRatio() * 100) / nearest.getHealthScale();
-                entry.append(" hp:").append(pct).append("%");
-            }
+
+            // Show actions first (shared across duplicates)
             if (nearest.getActions() != null && !nearest.getActions().isEmpty())
             {
                 entry.append(" [").append(String.join(",", nearest.getActions())).append("]");
+            }
+
+            // Show positions for up to 5 closest instances (* marks nearest)
+            int showCount = Math.min(list.size(), 5);
+            for (int i = 0; i < showCount; i++)
+            {
+                NearbyEntity e = list.get(i);
+                entry.append(i == 0 ? " *@(" : " @(").append(e.getWorldX()).append(",").append(e.getWorldY()).append("):").append(e.getDistance());
+                if (e.getQuantity() > 1) entry.append("x").append(e.getQuantity());
+                if (e.getHealthRatio() > 0)
+                {
+                    int pct = (e.getHealthRatio() * 100) / e.getHealthScale();
+                    entry.append(" hp:").append(pct).append("%");
+                }
             }
             entries.add(entry.toString());
         }
@@ -272,12 +275,23 @@ public class GameStateSerializer
         sb.append(" Plane:").append(env.getPlane())
             .append(" World:").append(env.getCurrentWorld())
             .append(" Tab:").append(env.getActiveTabName())
-            .append(" Style:").append(env.getAttackStyleName());
+            .append(" Style:").append(env.getAttackStyleName())
+            .append(env.isAutoRetaliate() ? " AutoRet:ON" : " AutoRet:OFF");
+
+        // Spellbook
+        String[] spellbooks = {"Standard", "Ancient", "Lunar", "Arceuus"};
+        int sbIdx = env.getSpellbookType();
+        sb.append(" Spellbook:").append(sbIdx >= 0 && sbIdx < spellbooks.length ? spellbooks[sbIdx] : "Unknown");
+
+        // Quest points
+        sb.append(" QP:").append(env.getQuestPoints());
+
         if (env.isInInstance()) sb.append(" [INSTANCED]");
         if (env.isBankOpen()) sb.append(" [BANK_OPEN]");
         if (env.isShopOpen()) sb.append(" [SHOP_OPEN]");
         if (env.isMakeInterfaceOpen()) sb.append(" [MAKE_INTERFACE_OPEN]");
         if (env.isGrandExchangeOpen()) sb.append(" [GE_OPEN]");
+        if (env.isSkulled()) sb.append(" [SKULLED]");
         if (env.getPoisonStatus() > 0)
         {
             if (env.getPoisonStatus() > 1000000) sb.append(" [VENOMED]");
@@ -285,6 +299,19 @@ public class GameStateSerializer
         }
         sb.append(" Tick:").append(env.getGameTickCount());
         sb.append("\n");
+
+        // Slayer task (when assigned)
+        if (env.getSlayerTaskCount() > 0)
+        {
+            sb.append("[SLAYER_TASK] ").append(env.getSlayerTaskCount()).append(" remaining");
+            sb.append(" (taskId:").append(env.getSlayerTaskId()).append(")\n");
+        }
+
+        // Boosted/drained non-combat skills
+        if (env.getBoostedSkills() != null && !env.getBoostedSkills().isEmpty())
+        {
+            sb.append("[SKILL_BOOSTS] ").append(String.join(" ", env.getBoostedSkills())).append("\n");
+        }
 
         // Interaction target — who/what the player is currently engaged with
         if (env.getInteractingWith() != null)
@@ -336,7 +363,7 @@ public class GameStateSerializer
             if (env.getDialogueType().equals("npc_continue") || env.getDialogueType().equals("player_continue")
                 || env.getDialogueType().equals("sprite_continue"))
             {
-                sb.append(" -> Use CONTINUE_DIALOGUE to proceed");
+                sb.append(" -> You MUST use {\"action\":\"CONTINUE_DIALOGUE\"} to advance this dialogue. Do NOT use PRESS_KEY.");
             }
             sb.append("\n");
 
@@ -395,6 +422,14 @@ public class GameStateSerializer
         {
             sb.append("[GE_OFFERS] ");
             sb.append(String.join(" | ", env.getGeOffers()));
+            sb.append("\n");
+        }
+
+        // Make interface options (when make/craft/smelt interface is open)
+        if (env.getMakeInterfaceItems() != null && !env.getMakeInterfaceItems().isEmpty())
+        {
+            sb.append("[MAKE_OPTIONS] Use MAKE_ITEM with one of: ");
+            sb.append(String.join(" | ", env.getMakeInterfaceItems()));
             sb.append("\n");
         }
     }

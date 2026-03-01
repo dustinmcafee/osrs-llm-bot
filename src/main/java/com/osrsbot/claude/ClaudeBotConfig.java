@@ -239,6 +239,18 @@ public interface ClaudeBotConfig extends Config
         return WorldHopType.FREE;
     }
 
+    @ConfigItem(
+        keyName = "nudge",
+        name = "Nudge / Hint",
+        description = "Type a hint for the bot (e.g. 'go train fishing'). Read once then auto-cleared.",
+        section = behaviorSection,
+        position = 10
+    )
+    default String nudge()
+    {
+        return "";
+    }
+
     enum WorldHopType
     {
         FREE("Free worlds only"),

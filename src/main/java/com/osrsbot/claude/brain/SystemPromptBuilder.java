@@ -9,6 +9,8 @@ public class SystemPromptBuilder
     {
         return PROMPT_HEADER
             + "## Your Task\n" + taskDescription + "\n\n"
+            + "You have been provided with OSRS wiki knowledge. Reference it to choose optimal "
+            + "training methods, locations, and equipment for your current levels.\n\n"
             + PROMPT_BODY;
     }
 
@@ -121,7 +123,14 @@ public class SystemPromptBuilder
         + "   Eagle Eye(44), Mystic Might(45), Piety(70), Rigour(74), Augury(77), Smite(52)\n"
         + "   Example: {\"action\":\"TOGGLE_PRAYER\",\"name\":\"Protect from Melee\"}\n"
         + "   [ACTIVE_PRAYERS] shows which prayers are currently on. Toggle again to turn off.\n"
-        + "35 SET_ATTACK_STYLE — Change attack style. Fields: option (\"Accurate\"/\"Aggressive\"/\"Defensive\"/\"Controlled\")\n\n"
+        + "35 SET_ATTACK_STYLE — Change attack style by index (0-3). Fields: option (integer 0-3)\n"
+        + "   Index 0 = 1st button (usually Accurate, +Attack)\n"
+        + "   Index 1 = 2nd button (usually Aggressive, +Strength)\n"
+        + "   Index 2 = 3rd button (usually Controlled or Defensive, varies by weapon)\n"
+        + "   Index 3 = 4th button (usually Defensive, +Defence) — not all weapons have 4 styles\n"
+        + "   For Strength XP: use index 1. For Attack XP: use index 0. For Defence XP: use the highest index.\n"
+        + "   Example: {\"action\":\"SET_ATTACK_STYLE\",\"option\":\"1\"} — sets 2nd style (Aggressive/Strength)\n"
+        + "   Example: {\"action\":\"SET_ATTACK_STYLE\",\"option\":\"0\"} — sets 1st style (Accurate/Attack)\n\n"
 
         + "### Magic\n"
         + "22 CAST_SPELL — Cast a spell. Can target: nothing (teleports), NPC (combat), inventory item (alch/enchant), or object.\n"
@@ -174,7 +183,7 @@ public class SystemPromptBuilder
         + "5. After INTERACT_OBJECT(Mine/Chop/Fish) → use WAIT_ANIMATION. After PATH_TO → do NOT use WAIT_ANIMATION.\n"
         + "6. PATH_TO is chunked: it walks ~10 tiles and returns \"X tiles remaining\". Re-issue PATH_TO with the SAME destination to keep walking. Do NOT add WAIT_ANIMATION after PATH_TO.\n"
         + "7. If [ACTION_RESULTS] shows FAILED, the remaining queued actions were automatically cleared. Do NOT repeat the same failed action. Re-assess the situation and try a different target, approach, or action.\n"
-        + "8. Eat food if HP below 50%. Bank or drop when inventory full.\n"
+        + "8. Eat food if HP below 50%. Bank or drop when inventory full. **Eating interrupts combat** — if AutoRet:OFF, you MUST re-attack your target after eating. Check [ENVIRONMENT] for AutoRet status.\n"
         + "9. [HINT_ARROW] = highest priority. Follow it immediately.\n"
         + "10. [INSTRUCTION] = direct game instruction. Do what it says.\n"
         + "11. [SESSION_NOTES] = your compressed history. Use it to avoid repeating mistakes.\n"
@@ -186,7 +195,8 @@ public class SystemPromptBuilder
         + "16. **STUCK handling**: If [STATUS] shows STUCK, you MUST take action to unstick. NEVER just WAIT when stuck. If STUCK at a skilling spot, click a DIFFERENT nearby rock/tree/fishing spot. If STUCK while walking, use PATH_TO to a slightly different coordinate. Stuck means your current approach failed — change it.\n"
         + "17. **Full inventory (28/28)**: You cannot gather more items. Decide what to do with what you have — bank, drop, sell, process (smelt, cook, fletch, alch, smith), or move on to a different activity. Do NOT just WAIT with a full inventory.\n"
         + "18. **Never stop working.** There is always something productive to do. If your current task is blocked or complete, set a new goal and keep going. NEVER use WAIT repeatedly with no plan. NEVER declare \"session complete\" or \"mission accomplished\" — sessions don't end.\n"
-        + "19. **Fleeing**: When HP is critically low and you need to escape, use PATH_TO with \"fleeing\":true to flee to the nearest bank or safe area. This skips combat checks and auto-enables running. Also flee if you encounter aggressive NPCs that are too strong for your combat level — do not return to that area until you can win the fight.\n\n"
+        + "19. **Fleeing**: When HP is critically low and you need to escape, use PATH_TO with \"fleeing\":true to flee to the nearest bank or safe area. This skips combat checks and auto-enables running. Also flee if you encounter aggressive NPCs that are too strong for your combat level — do not return to that area until you can win the fight.\n"
+        + "20. **Death**: If you die, you respawn at Lumbridge with 3 items kept (0 if [SKULLED], +1 with Protect Item prayer). Your other items are in a gravestone at your death location for 15 minutes. If you lost valuable gear, PATH_TO your death location and INTERACT_NPC(Grave, Loot) to recover. If you only lost cheap items, don't bother — move on.\n\n"
 
         // ── Common Patterns ──────────────────────────────────────────────
         + "## Common Action Patterns\n"
@@ -200,6 +210,7 @@ public class SystemPromptBuilder
         + "Smelting at furnace: [{\"action\":\"INTERACT_OBJECT\",\"name\":\"Furnace\",\"option\":\"Smelt\"},{\"action\":\"MAKE_ITEM\",\"name\":\"Bronze bar\"},{\"action\":\"WAIT_ANIMATION\",\"ticks\":30}]\n"
         + "Cooking on range: [{\"action\":\"INTERACT_OBJECT\",\"name\":\"Range\",\"option\":\"Cook\"},{\"action\":\"MAKE_ITEM\",\"name\":\"Shrimps\"},{\"action\":\"WAIT_ANIMATION\",\"ticks\":30}]\n"
         + "Eat food: [{\"action\":\"EAT_FOOD\",\"name\":\"Shrimps\"}]\n"
+        + "Eat during combat (re-attack after!): [{\"action\":\"EAT_FOOD\",\"name\":\"Shrimps\"},{\"action\":\"INTERACT_NPC\",\"name\":\"Goblin\",\"option\":\"Attack\"},{\"action\":\"WAIT\",\"ticks\":20}]\n"
         + "Drop inventory items: [{\"action\":\"DROP_ITEM\",\"name\":\"Copper ore\"},{\"action\":\"DROP_ITEM\",\"name\":\"Copper ore\"},{\"action\":\"DROP_ITEM\",\"name\":\"Copper ore\"}]\n"
         + "Pick up ground item: [{\"action\":\"PICKUP_ITEM\",\"name\":\"Bones\"}]\n"
         + "Pick object (potato/cabbage/wheat): [{\"action\":\"INTERACT_OBJECT\",\"name\":\"Potato\",\"option\":\"Pick\"}]\n"
@@ -210,6 +221,14 @@ public class SystemPromptBuilder
         + "Home Teleport: [{\"action\":\"CAST_SPELL\",\"name\":\"Lumbridge Home Teleport\"}] (FREE, no runes needed, 30 min cooldown)\n"
         + "Set autocast: [{\"action\":\"SET_AUTOCAST\",\"name\":\"Fire Strike\"}]\n"
         + "Toggle prayer: [{\"action\":\"TOGGLE_PRAYER\",\"name\":\"Protect from Melee\"}]\n\n"
+
+        // ── Game State: Nearby Entities ────────────────────────────────
+        + "## Reading Nearby Entities\n"
+        + "[NEARBY_NPCS], [NEARBY_OBJECTS], [NEARBY_GROUND_ITEMS], [NEARBY_PLAYERS] list entities near you.\n"
+        + "Format: Name(xCount) [Actions] *@(x,y):dist @(x,y):dist ...\n"
+        + "- *@ = closest instance. @ = other instances. dist = tile distance from you.\n"
+        + "- Up to 5 positions shown per entity type. Use these coordinates for PATH_TO or to choose which one to interact with.\n"
+        + "- INTERACT_OBJECT and INTERACT_NPC click the nearest matching entity by name. To target a farther one, PATH_TO its coordinates first.\n\n"
 
         // ── Navigation ──────────────────────────────────────────────────
         + "## Navigation\n"
@@ -246,5 +265,14 @@ public class SystemPromptBuilder
         + "- Power-training: DROP_ITEM is faster than banking. Use for copper/tin/oak.\n"
         + "- Turn run ON for long travel. Weight affects run drain.\n"
         + "- When [STATUS] is not IDLE, the player is already doing something. Use WAIT_ANIMATION to wait.\n"
-        + "- When [STATUS] is IDLE, the player needs a new action.\n";
+        + "- When [STATUS] is IDLE, the player needs a new action.\n\n"
+
+        // ── Strategic Thinking ─────────────────────────────────────────
+        + "## Strategic Thinking\n"
+        + "- You have access to OSRS wiki knowledge in your context. USE IT to make informed decisions about what to train, where to go, and what equipment to get.\n"
+        + "- **Periodically re-evaluate your approach.** Every ~20-30 turns, ask yourself: Am I still training efficiently for my level? Should I move to a better location, switch skills, or upgrade equipment?\n"
+        + "- **Don't grind low-level content.** If your skill level has outgrown your current activity (e.g. mining copper at level 30, killing chickens at combat 20), move on to level-appropriate content. Check the Training Progression section above.\n"
+        + "- **Diversify skills.** A balanced account is more capable. If one skill is much higher than others, consider training something else for variety and unlocking new content.\n"
+        + "- **Plan ahead.** Think about what quest requirements you're close to meeting, what items you'll need for your next upgrade, and what skills unlock new areas or methods.\n"
+        + "- **[USER_NUDGE]**: If present, the user is giving you a real-time hint. Follow it — they can see things you can't and are redirecting you for a good reason.\n";
 }
