@@ -29,8 +29,8 @@ proguard/
 *.idea/
 *.iml
 
-# Claude Code local settings
-.claude/
+# Claude Code local settings (keep skills/)
+.claude/settings.local.json
 
 # Decompiled RuneLite stubs (copyright)
 net/
