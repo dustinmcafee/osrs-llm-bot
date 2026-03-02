@@ -25,6 +25,22 @@ proguard/
 # Log Files
 *.log
 
-# idea
+# IDE
 *.idea/
 *.iml
+
+# Claude Code local settings
+.claude/
+
+# Decompiled RuneLite stubs (copyright)
+net/
+
+# Runtime artifacts
+nohup.out
+
+# Backup files
+*.bak
+
+# Training data (too large for git)
+osrs-llm/data/*.jsonl
+!osrs-llm/data/example_data.jsonl

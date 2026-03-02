@@ -1,10 +1,11 @@
 #!/bin/bash
 # Wrapper that Bolt calls instead of runelite.jar directly.
-# Uses hardcoded paths because $HOME is remapped inside flatpak sandbox.
+# Resolves paths relative to this script and $HOME.
 
-BOLT_DATA="/home/dustin/.var/app/com.adamcake.Bolt/data/bolt-launcher"
-PLUGIN_JAR="/home/dustin/workingdir/apk_source/osrs/build/libs/claude-osrs-bot-1.0.0.jar"
-LOG="/home/dustin/workingdir/apk_source/osrs/bolt-launch.log"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BOLT_DATA="$HOME/.var/app/com.adamcake.Bolt/data/bolt-launcher"
+PLUGIN_JAR="$SCRIPT_DIR/build/libs/claude-osrs-bot-1.0.0.jar"
+LOG="$SCRIPT_DIR/bolt-launch.log"
 JAVA="/app/jre/bin/java"
 if [ ! -f "$JAVA" ]; then
     JAVA="/usr/bin/java"

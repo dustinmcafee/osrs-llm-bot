@@ -6,7 +6,8 @@
 BOLT_DATA="$HOME/.var/app/com.adamcake.Bolt/data/bolt-launcher"
 RUNELITE_DIR="$BOLT_DATA/.runelite"
 REPO_DIR="$RUNELITE_DIR/repository2"
-PLUGIN_JAR="$HOME/workingdir/apk_source/osrs/build/libs/claude-osrs-bot-1.0.0.jar"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_JAR="$SCRIPT_DIR/build/libs/claude-osrs-bot-1.0.0.jar"
 JAVA="/app/jre/bin/java"
 
 # Use system Java if not in flatpak

@@ -42,7 +42,7 @@ public interface ClaudeBotConfig extends Config
     @ConfigItem(
         keyName = "apiBaseUrl",
         name = "API Base URL (optional)",
-        description = "OpenAI-compatible endpoint (e.g. http://192.168.1.229:1234/v1). Leave empty for Anthropic API.",
+        description = "OpenAI-compatible endpoint (e.g. http://localhost:1234/v1). Leave empty for Anthropic API.",
         section = apiSection,
         position = 0
     )
