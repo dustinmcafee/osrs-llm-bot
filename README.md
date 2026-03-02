@@ -110,7 +110,7 @@ The key insight: the LLM doesn't need to understand pixels or raw input. Give it
 
 The proxy server maintains a persistent Claude session across the bot's entire lifetime. This is the difference between expert-level play and aimless wandering:
 
-![Session Comparison](docs/images/session-comparison.png)
+![Proxy Modes](docs/images/proxy-modes.png)
 
 With a persistent session, Claude remembers its goals, learns from failed actions, and executes coherent multi-step plans. Without it, every turn is a cold start — the bot can only react to what it sees right now.
 

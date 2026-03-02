@@ -16,28 +16,28 @@ The fine-tuned model runs on consumer hardware (RTX 3080, 10GB VRAM) and serves 
 ```mermaid
 flowchart LR
     subgraph Sources["Data Sources"]
-        W["Wiki Q&A\n~4,491 articles"]
-        G["Live Gameplay Logs\n~432 turns"]
-        S["Synthetic Gameplay\n~7,500 scenarios"]
-        A["Auto-Retaliate\n26 sequences"]
-        E["Hand-Crafted Gold\n12-15 examples"]
+        W["Wiki Q&A<br/>~4,491 articles"]
+        G["Live Gameplay Logs<br/>~432 turns"]
+        S["Synthetic Gameplay<br/>~7,500 scenarios"]
+        A["Auto-Retaliate<br/>26 sequences"]
+        E["Hand-Crafted Gold<br/>12-15 examples"]
     end
 
     subgraph Pipeline["Pipeline"]
-        D["distill_training_data.py\nFilter + Categorize + Score"]
-        F["format_training_data.py\nMerge + Weight + Shuffle"]
-        V["validate_training_data.py\nSchema + Semantic Checks"]
+        D["distill_training_data.py<br/>Filter + Categorize + Score"]
+        F["format_training_data.py<br/>Merge + Weight + Shuffle"]
+        V["validate_training_data.py<br/>Schema + Semantic Checks"]
     end
 
     subgraph Training["Fine-Tune"]
-        T["train.py\nQLoRA on Llama 3.1 8B"]
-        M["Merged Model\nfloat16"]
-        Q["GGUF Export\nq4_k_m quantized"]
+        T["train.py<br/>QLoRA on Llama 3.1 8B"]
+        M["Merged Model<br/>float16"]
+        Q["GGUF Export<br/>q4_k_m quantized"]
     end
 
     subgraph Serve["Serve"]
-        L["LM Studio / Ollama\nlocalhost:1234"]
-        P["RuneLite Plugin\napiBaseUrl config"]
+        L["LM Studio / Ollama<br/>localhost:1234"]
+        P["RuneLite Plugin<br/>apiBaseUrl config"]
     end
 
     W --> F

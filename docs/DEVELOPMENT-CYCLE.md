@@ -24,15 +24,15 @@ Every feature in this project followed the same tight feedback loop. The human s
 
 ```mermaid
 flowchart TD
-    A["1. Human sets task/goal\n(natural language)"] --> B["2. Claude Code explores codebase\n(reads existing patterns, conventions)"]
-    B --> C["3. Claude Code plans approach\n(proposes architecture, asks clarifying Qs)"]
-    C --> D["4. Claude Code writes code\n(Java plugin, Node.js proxy, Python scripts)"]
-    D --> E["5. Build + Deploy\n(./gradlew clean shadowJar → sideloaded-plugins/)"]
-    E --> F["6. Live Test\n(watch bot play OSRS in real-time)"]
+    A["1. Human sets task/goal<br/>(natural language)"] --> B["2. Claude Code explores codebase<br/>(reads existing patterns, conventions)"]
+    B --> C["3. Claude Code plans approach<br/>(proposes architecture, asks clarifying Qs)"]
+    C --> D["4. Claude Code writes code<br/>(Java plugin, Node.js proxy, Python scripts)"]
+    D --> E["5. Build + Deploy<br/>(./gradlew clean shadowJar → sideloaded-plugins/)"]
+    E --> F["6. Live Test<br/>(watch bot play OSRS in real-time)"]
     F --> G{"Works?"}
     G -- "Yes" --> H["Ship it. Next task."]
-    G -- "No" --> I["7. Human reports failure\n(observation, not diagnosis)"]
-    I --> J["8. Claude Code debugs + fixes\n(reads logs, proposes fix, rewrites)"]
+    G -- "No" --> I["7. Human reports failure<br/>(observation, not diagnosis)"]
+    I --> J["8. Claude Code debugs + fixes<br/>(reads logs, proposes fix, rewrites)"]
     J --> E
 
     style A fill:#2d5a27,stroke:#4a8c3f,color:#fff

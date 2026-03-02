@@ -25,37 +25,37 @@ The system forms a closed loop: the game client produces state, the LLM decides 
 ```mermaid
 flowchart TB
     subgraph RuneLite["RuneLite Plugin (JVM)"]
-        GSR["GameStateReader\n(capture NPC, objects,\ninventory, environment)"]
-        GSS["GameStateSerializer\n(plain-text format)"]
-        CM["ConversationManager\n(sliding window +\ncompressed session notes)"]
-        RP["ResponseParser\n(JSON extraction, alias\nresolution, auto-correction)"]
-        AQ["ActionQueue\n(FIFO, batch-limited)"]
-        AE["ActionExecutor\n(background thread,\n3-phase dispatch)"]
-        HS["HumanSimulator\n(Bezier mouse, timing,\nbreak scheduler)"]
-        GC["Game Client Canvas\n(receives AWT events)"]
+        GSR["GameStateReader<br/>(capture NPC, objects,<br/>inventory, environment)"]
+        GSS["GameStateSerializer<br/>(plain-text format)"]
+        CM["ConversationManager<br/>(sliding window +<br/>compressed session notes)"]
+        RP["ResponseParser<br/>(JSON extraction, alias<br/>resolution, auto-correction)"]
+        AQ["ActionQueue<br/>(FIFO, batch-limited)"]
+        AE["ActionExecutor<br/>(background thread,<br/>3-phase dispatch)"]
+        HS["HumanSimulator<br/>(Bezier mouse, timing,<br/>break scheduler)"]
+        GC["Game Client Canvas<br/>(receives AWT events)"]
     end
 
     subgraph LLM["LLM Backend"]
-        PROXY["Proxy Server\n(Node.js, persistent sessions)"]
+        PROXY["Proxy Server<br/>(Node.js, persistent sessions)"]
         CLAUDE["Claude / Local LLM"]
-        WIKI["Wiki Context\n(injected on first turn)"]
-        TRAIN["Training Log\n(/tmp/training_turns.jsonl)"]
+        WIKI["Wiki Context<br/>(injected on first turn)"]
+        TRAIN["Training Log<br/>(/tmp/training_turns.jsonl)"]
     end
 
     GSR -->|"GameStateSnapshot"| GSS
     GSS -->|"[PLAYER] [INVENTORY] ..."| CM
     CM -->|"history + current state"| PROXY
     WIKI -->|"first turn only"| PROXY
-    PROXY -->|"OpenAI-compatible\n/v1/chat/completions"| CLAUDE
-    CLAUDE -->|"JSON actions\n+ reasoning"| PROXY
+    PROXY -->|"OpenAI-compatible<br/>/v1/chat/completions"| CLAUDE
+    CLAUDE -->|"JSON actions<br/>+ reasoning"| PROXY
     PROXY -->|"response text"| RP
     PROXY -->|"game_state + response"| TRAIN
     RP -->|"List&lt;BotAction&gt;"| AQ
     AQ -->|"dequeue on tick"| AE
-    AE -->|"Phase 1: client thread\nPhase 2: background thread\nPhase 3: client thread"| HS
-    HS -->|"MouseEvent / KeyEvent\nvia EventQueue"| GC
+    AE -->|"Phase 1: client thread<br/>Phase 2: background thread<br/>Phase 3: client thread"| HS
+    HS -->|"MouseEvent / KeyEvent<br/>via EventQueue"| GC
     GC -->|"game state changes"| GSR
-    AE -->|"ActionResult\n(success/failure)"| CM
+    AE -->|"ActionResult<br/>(success/failure)"| CM
 
     style RuneLite fill:#1a1a2e,stroke:#e94560,color:#eee
     style LLM fill:#0f3460,stroke:#e94560,color:#eee
@@ -319,15 +319,15 @@ Name(lvl:N)(xCount) [Action1,Action2] *@(x,y):dist @(x,y):dist ...
 
 ```mermaid
 flowchart TD
-    RAW["Raw LLM Response"] --> FENCE{"Contains\n```json ... ```?"}
-    FENCE -->|Yes| EXTRACT_FENCE["Extract content\nfrom code fence"]
-    FENCE -->|No| STRIP["Strip stray\ncode fence markers"]
-    STRIP --> FIND_ARRAY["Find [ followed by {\n(skip prose brackets\nlike [IDLE], [Smelt])"]
+    RAW["Raw LLM Response"] --> FENCE{"Contains<br/>```json ... ```?"}
+    FENCE -->|Yes| EXTRACT_FENCE["Extract content<br/>from code fence"]
+    FENCE -->|No| STRIP["Strip stray<br/>code fence markers"]
+    STRIP --> FIND_ARRAY["Find [ followed by {<br/>(skip prose brackets<br/>like [IDLE], [Smelt])"]
     EXTRACT_FENCE --> SANITIZE
     FIND_ARRAY --> SANITIZE["sanitizeJson()"]
     SANITIZE --> PARSE["JsonParser.parseString()"]
-    PARSE --> RESOLVE["Resolve action types:\n1. Integer ID\n2. Exact enum match\n3. Alias lookup (130+)"]
-    RESOLVE --> CORRECT["Auto-correct:\nfield recovery, type inference"]
+    PARSE --> RESOLVE["Resolve action types:<br/>1. Integer ID<br/>2. Exact enum match<br/>3. Alias lookup (130+)"]
+    RESOLVE --> CORRECT["Auto-correct:<br/>field recovery, type inference"]
     CORRECT --> VALIDATE["Validate required fields"]
     VALIDATE --> OUTPUT["List&lt;BotAction&gt;"]
 ```
@@ -423,11 +423,11 @@ All input to the game client flows through the humanization layer. No action eve
 ```mermaid
 flowchart TD
     subgraph HumanSimulator
-        TP["TimingEngine\n(Gaussian delays,\ndistracted pauses)"]
-        MC["MouseController\n(Bezier curves,\novershoot, tremor)"]
-        MI["MenuInteractor\n(right-click menus)"]
-        CP["ClickProfile\n(per-session offset bias)"]
-        BS["BreakScheduler\n(AFK breaks)"]
+        TP["TimingEngine<br/>(Gaussian delays,<br/>distracted pauses)"]
+        MC["MouseController<br/>(Bezier curves,<br/>overshoot, tremor)"]
+        MI["MenuInteractor<br/>(right-click menus)"]
+        CP["ClickProfile<br/>(per-session offset bias)"]
+        BS["BreakScheduler<br/>(AFK breaks)"]
     end
 
     AE["ActionExecutor"] --> HumanSimulator
@@ -554,12 +554,12 @@ Each line: `startX startY startZ endX endY endZ action target objectId ["require
 
 ```mermaid
 flowchart TD
-    START["Start Node"] --> PQ["PriorityQueue\n(sorted by f-score)"]
+    START["Start Node"] --> PQ["PriorityQueue<br/>(sorted by f-score)"]
     PQ --> POLL["Poll lowest-priority node"]
-    POLL --> GOAL{"Reached\ntarget?"}
-    GOAL -->|Yes| PATH["Reconstruct path\nvia parent chain"]
-    GOAL -->|No| NEIGHBORS["Add walkable neighbors:\n8 cardinal directions\n+ transport connections"]
-    NEIGHBORS --> VISITED{"Already\nvisited?"}
+    POLL --> GOAL{"Reached<br/>target?"}
+    GOAL -->|Yes| PATH["Reconstruct path<br/>via parent chain"]
+    GOAL -->|No| NEIGHBORS["Add walkable neighbors:<br/>8 cardinal directions<br/>+ transport connections"]
+    NEIGHBORS --> VISITED{"Already<br/>visited?"}
     VISITED -->|Yes| SKIP["Skip"]
     VISITED -->|No| SCORE["f = (g + h) * 4 + rand(0..3)"]
     SCORE --> PQ
@@ -623,12 +623,12 @@ The proxy (`proxy/server.mjs`) is a Node.js HTTP server that bridges the RuneLit
 
 ```mermaid
 flowchart LR
-    BOT["RuneLite Plugin\n(ClaudeBrainClient)"] -->|"POST /v1/chat/completions\n(OpenAI format)"| PROXY["Proxy Server\n:8082"]
-    PROXY -->|"First turn:\nclaude -p --session-id UUID"| CLI["Claude CLI"]
-    PROXY -->|"Subsequent turns:\nclaude -p --resume UUID"| CLI
+    BOT["RuneLite Plugin<br/>(ClaudeBrainClient)"] -->|"POST /v1/chat/completions<br/>(OpenAI format)"| PROXY["Proxy Server<br/>:8082"]
+    PROXY -->|"First turn:<br/>claude -p --session-id UUID"| CLI["Claude CLI"]
+    PROXY -->|"Subsequent turns:<br/>claude -p --resume UUID"| CLI
     CLI --> CLAUDE["Claude API"]
     PROXY -->|"append JSONL"| TRAIN["/tmp/training_turns.jsonl"]
-    PROXY -.->|"Manual mode:\nwrite state file"| STATE["/tmp/bot_pending_state.txt"]
+    PROXY -.->|"Manual mode:<br/>write state file"| STATE["/tmp/bot_pending_state.txt"]
     STATE -.->|"Human responds"| RESP["/tmp/bot_response.txt"]
     RESP -.->|"Read response"| PROXY
 ```
@@ -642,7 +642,7 @@ The key feature of the proxy is **session persistence**. Instead of stateless on
 
 The proxy strips conversation history from the bot's requests since Claude already remembers it from the session. Only the current game state is forwarded. This dramatically reduces token usage and avoids the O(n^2) cost of resending history.
 
-![Session Comparison](images/session-comparison.png)
+![Proxy Modes](images/proxy-modes.png)
 
 With a persistent session, Claude remembers goals, learns from failed actions, and executes coherent multi-step plans. Without it, every turn is a cold start — the bot can only react to what it sees right now, leading to circular behavior and no long-horizon planning.
 
