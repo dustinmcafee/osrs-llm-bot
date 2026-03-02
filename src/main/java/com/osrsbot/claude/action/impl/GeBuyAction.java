@@ -8,6 +8,7 @@ import com.osrsbot.claude.util.ClientThreadRunner;
 import net.runelite.api.Client;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
+import net.runelite.client.game.ItemManager;
 
 import java.awt.Point;
 import java.awt.Rectangle;
@@ -40,7 +41,8 @@ public class GeBuyAction
     private static final int INPUT_TIMEOUT_MS = 2400; // 4 game ticks for chatbox input to appear
 
     public static ActionResult execute(Client client, HumanSimulator human,
-                                       ClientThread clientThread, BotAction action)
+                                       ItemManager itemManager, ClientThread clientThread,
+                                       BotAction action, int maxOverpayPct)
     {
         String itemName = action.getName();
         if (itemName == null || itemName.isEmpty())
@@ -163,10 +165,39 @@ public class GeBuyAction
             setQuantity(client, human, clientThread, quantity);
         }
 
-        // Step 6: Set price if specified
+        // Step 6: Set price — enforce max overpay cap relative to GE guide price
+        // First, try to find the guide price from the GE setup widgets
+        int guidePrice = findGuidePrice(client, itemManager, clientThread);
+        int maxPrice = (maxOverpayPct > 0 && guidePrice > 0)
+            ? (int)(guidePrice * (100 + maxOverpayPct) / 100.0)
+            : 0; // 0 = no cap
+
+        String priceSuffix = "";
         if (price > 0)
         {
+            // Exact price — clamp if cap is active
+            if (maxPrice > 0 && price > maxPrice)
+            {
+                System.out.println("[ClaudeBot] GE_BUY price capped: " + price + " -> " + maxPrice
+                    + " (guide=" + guidePrice + ", max+" + maxOverpayPct + "%)");
+                priceSuffix = " (price capped from " + price + " to " + maxPrice
+                    + ", guide=" + guidePrice + ", max overpay " + maxOverpayPct + "%)";
+                price = maxPrice;
+            }
             setPrice(client, human, clientThread, price);
+        }
+        else if (price < 0)
+        {
+            // Button clicks — cap at maxOverpayPct/5 if cap is active
+            int maxClicks = (maxOverpayPct > 0) ? Math.max(1, maxOverpayPct / 5) : 10;
+            int clicks = Math.min(Math.abs(price), maxClicks);
+            if (clicks != Math.abs(price))
+            {
+                System.out.println("[ClaudeBot] GE_BUY +5% clicks capped: " + Math.abs(price)
+                    + " -> " + clicks + " (max " + maxOverpayPct + "%)");
+                priceSuffix = " (+5% clicks capped to " + clicks + ", max overpay " + maxOverpayPct + "%)";
+            }
+            clickPricePlus(client, human, clientThread, clicks);
         }
 
         // Step 7: Click confirm button
@@ -191,7 +222,9 @@ public class GeBuyAction
             System.err.println("[ClaudeBot] GE_BUY: Confirm button not found");
         }
 
-        return ActionResult.success(ActionType.GE_BUY);
+        String msg = "Buy offer placed for " + quantity + "x " + itemName;
+        if (!priceSuffix.isEmpty()) msg += priceSuffix;
+        return ActionResult.success(ActionType.GE_BUY, msg);
     }
 
     /**
@@ -282,6 +315,95 @@ public class GeBuyAction
         catch (Throwable t)
         {
             System.err.println("[ClaudeBot] GE price set failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Tries to find the GE guide price for the selected item.
+     * After item selection, the GE setup screen displays the item sprite in a widget.
+     * We scan for widgets with a non-zero itemId, then look up the GE price via ItemManager.
+     */
+    private static int findGuidePrice(Client client, ItemManager itemManager, ClientThread clientThread)
+    {
+        try
+        {
+            return ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                // Scan GE widgets for one with an item sprite (itemId > 0)
+                for (int childIdx = 0; childIdx < WIDGET_SEARCH_RANGE; childIdx++)
+                {
+                    Widget w = client.getWidget(GE_GROUP_ID, childIdx);
+                    if (w == null || w.isHidden()) continue;
+
+                    int id = w.getItemId();
+                    if (id > 0)
+                    {
+                        int price = itemManager.getItemPrice(id);
+                        if (price > 0)
+                        {
+                            System.out.println("[ClaudeBot] GE guide price for itemId=" + id + ": " + price);
+                            return price;
+                        }
+                    }
+
+                    // Check children too
+                    Widget[] children = w.getChildren();
+                    if (children != null)
+                    {
+                        for (Widget c : children)
+                        {
+                            if (c == null) continue;
+                            id = c.getItemId();
+                            if (id > 0)
+                            {
+                                int price = itemManager.getItemPrice(id);
+                                if (price > 0)
+                                {
+                                    System.out.println("[ClaudeBot] GE guide price for itemId=" + id + ": " + price);
+                                    return price;
+                                }
+                            }
+                        }
+                    }
+                }
+                System.err.println("[ClaudeBot] GE_BUY: could not find guide price from widgets");
+                return 0;
+            });
+        }
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] GE guide price lookup failed: " + t.getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Clicks the "+5%" price button the specified number of times for quick overpay.
+     */
+    private static void clickPricePlus(Client client, HumanSimulator human,
+                                       ClientThread clientThread, int clicks)
+    {
+        try
+        {
+            Point plusPoint = ClientThreadRunner.runOnClientThread(clientThread,
+                () -> findWidgetByAction(client, GE_GROUP_ID, "+5%"));
+
+            if (plusPoint != null)
+            {
+                for (int i = 0; i < clicks; i++)
+                {
+                    human.moveAndClick(plusPoint.x, plusPoint.y);
+                    human.getTimingEngine().sleep(100 + (int)(Math.random() * 150));
+                }
+                human.shortPause();
+            }
+            else
+            {
+                System.err.println("[ClaudeBot] GE_BUY: '+5%' button not found");
+            }
+        }
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] GE +5% click failed: " + t.getMessage());
         }
     }
 

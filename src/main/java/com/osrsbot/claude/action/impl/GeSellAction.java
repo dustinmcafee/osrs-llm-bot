@@ -39,7 +39,7 @@ public class GeSellAction
     private static final int INPUT_TIMEOUT_MS = 2400; // 4 game ticks for chatbox input to appear
 
     public static ActionResult execute(Client client, HumanSimulator human, ItemManager itemManager,
-                                       ClientThread clientThread, BotAction action)
+                                       ClientThread clientThread, BotAction action, int maxUndercutPct)
     {
         String itemName = action.getName();
         if (itemName == null || itemName.isEmpty())
@@ -104,10 +104,11 @@ public class GeSellAction
         human.getTimingEngine().sleep(human.getTimingEngine().nextShortPause());
 
         // Step 3: Find the item in the GE inventory panel and click it
-        Point itemPoint;
+        // Returns [Point, Integer(itemId)] so we can look up guide price
+        Object[] itemLookup;
         try
         {
-            itemPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+            itemLookup = ClientThreadRunner.runOnClientThread(clientThread, () -> {
                 // Search the GE inventory panel
                 Widget geInv = client.getWidget(GE_INV_GROUP_ID, 0);
                 if (geInv == null || geInv.isHidden()) return null;
@@ -127,7 +128,10 @@ public class GeSellAction
                         Rectangle bounds = child.getBounds();
                         if (bounds != null)
                         {
-                            return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                            return new Object[]{
+                                new Point((int) bounds.getCenterX(), (int) bounds.getCenterY()),
+                                child.getItemId()
+                            };
                         }
                     }
                 }
@@ -139,10 +143,13 @@ public class GeSellAction
             return ActionResult.failure(ActionType.GE_SELL, "GE inventory lookup failed: " + t.getMessage());
         }
 
-        if (itemPoint == null)
+        if (itemLookup == null)
         {
             return ActionResult.failure(ActionType.GE_SELL, "Item not found in inventory: " + itemName);
         }
+
+        Point itemPoint = (Point) itemLookup[0];
+        int foundItemId = (Integer) itemLookup[1];
 
         // Click the item (humanized)
         human.moveAndClick(itemPoint.x, itemPoint.y);
@@ -155,6 +162,54 @@ public class GeSellAction
         if (quantity > 1)
         {
             setQuantity(client, human, clientThread, quantity);
+        }
+
+        // Step 4b: Set price — enforce max undercut cap relative to GE guide price
+        int guidePrice = 0;
+        try
+        {
+            guidePrice = itemManager.getItemPrice(foundItemId);
+            if (guidePrice > 0)
+            {
+                System.out.println("[ClaudeBot] GE_SELL guide price for itemId=" + foundItemId + ": " + guidePrice);
+            }
+        }
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] GE_SELL guide price lookup failed: " + t.getMessage());
+        }
+
+        int minPrice = (maxUndercutPct > 0 && guidePrice > 0)
+            ? (int)(guidePrice * (100 - maxUndercutPct) / 100.0)
+            : 0; // 0 = no cap
+
+        int price = action.getX();
+        String priceSuffix = "";
+        if (price > 0)
+        {
+            // Exact price — clamp if below minimum
+            if (minPrice > 0 && price < minPrice)
+            {
+                System.out.println("[ClaudeBot] GE_SELL price capped: " + price + " -> " + minPrice
+                    + " (guide=" + guidePrice + ", max-" + maxUndercutPct + "%)");
+                priceSuffix = " (price capped from " + price + " to " + minPrice
+                    + ", guide=" + guidePrice + ", max undercut " + maxUndercutPct + "%)";
+                price = minPrice;
+            }
+            setPrice(client, human, clientThread, price);
+        }
+        else if (price < 0)
+        {
+            // Button clicks — cap at maxUndercutPct/5 if cap is active
+            int maxClicks = (maxUndercutPct > 0) ? Math.max(1, maxUndercutPct / 5) : 10;
+            int clicks = Math.min(Math.abs(price), maxClicks);
+            if (clicks != Math.abs(price))
+            {
+                System.out.println("[ClaudeBot] GE_SELL -5% clicks capped: " + Math.abs(price)
+                    + " -> " + clicks + " (max " + maxUndercutPct + "%)");
+                priceSuffix = " (-5% clicks capped to " + clicks + ", max undercut " + maxUndercutPct + "%)";
+            }
+            clickPriceMinus(client, human, clientThread, clicks);
         }
 
         // Step 5: Click confirm button
@@ -179,7 +234,9 @@ public class GeSellAction
             System.err.println("[ClaudeBot] GE_SELL: Confirm button not found");
         }
 
-        return ActionResult.success(ActionType.GE_SELL);
+        String msg = "Sell offer placed for " + quantity + "x " + itemName;
+        if (!priceSuffix.isEmpty()) msg += priceSuffix;
+        return ActionResult.success(ActionType.GE_SELL, msg);
     }
 
     /**
@@ -231,6 +288,72 @@ public class GeSellAction
         catch (Throwable t)
         {
             System.err.println("[ClaudeBot] GE sell quantity set failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Sets the price in the GE offer by finding and clicking the price input,
+     * then typing the amount.
+     */
+    private static void setPrice(Client client, HumanSimulator human,
+                                 ClientThread clientThread, int price)
+    {
+        try
+        {
+            Point pricePoint = ClientThreadRunner.runOnClientThread(clientThread,
+                () -> findWidgetByAction(client, GE_GROUP_ID, "Enter price"));
+
+            if (pricePoint != null)
+            {
+                human.moveAndClick(pricePoint.x, pricePoint.y);
+                if (!waitForChatboxInput(client, human, clientThread))
+                {
+                    System.err.println("[ClaudeBot] GE sell price input did not appear");
+                    return;
+                }
+                human.typeText(String.valueOf(price));
+                human.pressKey(KeyEvent.VK_ENTER);
+                human.shortPause();
+            }
+            else
+            {
+                System.err.println("[ClaudeBot] GE_SELL: 'Enter price' button not found");
+            }
+        }
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] GE sell price set failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Clicks the "-5%" price button the specified number of times for quick underselling.
+     */
+    private static void clickPriceMinus(Client client, HumanSimulator human,
+                                        ClientThread clientThread, int clicks)
+    {
+        try
+        {
+            Point minusPoint = ClientThreadRunner.runOnClientThread(clientThread,
+                () -> findWidgetByAction(client, GE_GROUP_ID, "-5%"));
+
+            if (minusPoint != null)
+            {
+                for (int i = 0; i < clicks; i++)
+                {
+                    human.moveAndClick(minusPoint.x, minusPoint.y);
+                    human.getTimingEngine().sleep(100 + (int)(Math.random() * 150));
+                }
+                human.shortPause();
+            }
+            else
+            {
+                System.err.println("[ClaudeBot] GE_SELL: '-5%' button not found");
+            }
+        }
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] GE -5% click failed: " + t.getMessage());
         }
     }
 

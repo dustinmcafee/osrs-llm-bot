@@ -45,7 +45,9 @@ public enum ActionType
     PATH_TO(38),
     WAIT_ANIMATION(39),
     CLEAR_ACTION_QUEUE(40),
-    SET_AUTO_RETALIATE(41);
+    SET_AUTO_RETALIATE(41),
+    GE_COLLECT(42),
+    GE_ABORT(43);
 
     private final int id;
 

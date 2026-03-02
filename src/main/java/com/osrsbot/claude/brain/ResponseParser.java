@@ -106,6 +106,9 @@ public class ResponseParser
         alias("PICKUP", ActionType.PICKUP_ITEM, null);
         alias("PICK_UP", ActionType.PICKUP_ITEM, null);
         alias("TAKE", ActionType.PICKUP_ITEM, null);
+        alias("TAKE_GROUND_ITEM", ActionType.PICKUP_ITEM, null);
+        alias("TAKE_ITEM", ActionType.PICKUP_ITEM, null);
+        alias("LOOT", ActionType.PICKUP_ITEM, null);
         alias("EQUIP", ActionType.EQUIP_ITEM, null);
         alias("WEAR", ActionType.EQUIP_ITEM, null);
         alias("WIELD", ActionType.EQUIP_ITEM, null);
@@ -132,6 +135,22 @@ public class ResponseParser
         alias("TOGGLE_AUTO_RETALIATE", ActionType.SET_AUTO_RETALIATE, null);
         alias("TOGGLE_RETALIATE", ActionType.SET_AUTO_RETALIATE, null);
         alias("AUTORET", ActionType.SET_AUTO_RETALIATE, null);
+        alias("COLLECT", ActionType.GE_COLLECT, null);
+        alias("COLLECT_GE", ActionType.GE_COLLECT, null);
+        alias("GE_COLLECT_ITEMS", ActionType.GE_COLLECT, null);
+
+        // GE abort aliases
+        alias("ABORT_OFFER", ActionType.GE_ABORT, null);
+        alias("CANCEL_OFFER", ActionType.GE_ABORT, null);
+        alias("GE_CANCEL", ActionType.GE_ABORT, null);
+
+        // Close interface aliases → PRESS_KEY("escape")
+        alias("CLOSE_SHOP", ActionType.PRESS_KEY, null, "escape");
+        alias("CLOSE_GE", ActionType.PRESS_KEY, null, "escape");
+        alias("CLOSE_INTERFACE", ActionType.PRESS_KEY, null, "escape");
+        alias("EXIT_SHOP", ActionType.PRESS_KEY, null, "escape");
+        alias("EXIT_GE", ActionType.PRESS_KEY, null, "escape");
+        alias("EXIT_INTERFACE", ActionType.PRESS_KEY, null, "escape");
     }
 
     private static void alias(String name, ActionType type, String defaultOption)
@@ -297,6 +316,8 @@ public class ResponseParser
                 if (obj.has("object")) action.setObject(safeString(obj, "object"));
                 if (obj.has("text")) action.setText(safeString(obj, "text"));
                 if (obj.has("fleeing")) action.setFleeing(safeBoolean(obj, "fleeing"));
+                // GE price: LLMs naturally write "price" instead of "x"
+                if (obj.has("price") && action.getX() == 0) action.setX(safeInt(obj, "price"));
 
                 // Apply defaults from alias if the model didn't specify them
                 if (resolvedAlias != null)

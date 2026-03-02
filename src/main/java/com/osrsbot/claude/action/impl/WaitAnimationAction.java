@@ -28,7 +28,7 @@ public class WaitAnimationAction
     private static final int MS_PER_TICK = 600;
 
     /** Max time to wait for an animation to START before giving up */
-    private static final int START_GRACE_TICKS = 3; // 1.8 seconds
+    private static final int START_GRACE_TICKS = 5; // 3 seconds
 
     public static ActionResult execute(Client client, HumanSimulator human, ClientThread clientThread, BotAction action)
     {
@@ -63,12 +63,17 @@ public class WaitAnimationAction
                     if (local == null) return new Object[]{ AnimationID.IDLE, null };
 
                     int anim = local.getAnimation();
+                    Actor playerTarget = local.getInteracting();
 
-                    // Check if anything is attacking us
+                    // Check if anything is attacking us that we didn't initiate combat with.
+                    // If the player is fighting NPC X (player.getInteracting() == npc),
+                    // that's expected combat — don't interrupt. Only interrupt for
+                    // NPCs that attack us while we're doing something else.
                     for (NPC npc : client.getNpcs())
                     {
                         if (npc != null && npc.getInteracting() == local
-                            && npc.getCombatLevel() > 0)
+                            && npc.getCombatLevel() > 0
+                            && npc != playerTarget)
                         {
                             return new Object[]{ anim, npc.getName() + " (lvl " + npc.getCombatLevel() + ")" };
                         }
@@ -133,9 +138,10 @@ public class WaitAnimationAction
                         isMoving = ClientThreadRunner.runOnClientThread(clientThread, () -> {
                             Player local = client.getLocalPlayer();
                             if (local == null) return false;
-                            LocalPoint dest = local.getLocalLocation();
-                            // Player is moving if their path target differs from current position
-                            // or if the pose animation indicates walking
+                            // Check if client has a destination set (most reliable)
+                            LocalPoint destLoc = client.getLocalDestinationLocation();
+                            if (destLoc != null) return true;
+                            // Fall back to pose animation check
                             int poseAnim = local.getPoseAnimation();
                             return poseAnim == local.getWalkAnimation()
                                 || poseAnim == local.getRunAnimation();

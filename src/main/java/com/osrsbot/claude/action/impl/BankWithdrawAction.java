@@ -185,6 +185,34 @@ public class BankWithdrawAction
         java.awt.Point itemPoint = waitForSearchResult(client, clientThread, itemUtils, itemName, human);
         if (itemPoint == null)
         {
+            // Debug: list what items ARE visible in bank after search
+            try
+            {
+                String visibleItems = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    Widget bankContainer = client.getWidget(WidgetInfo.BANK_ITEM_CONTAINER);
+                    if (bankContainer == null) return "BANK_CONTAINER_NULL";
+                    Widget[] children = bankContainer.getDynamicChildren();
+                    if (children == null) return "NO_CHILDREN";
+                    StringBuilder sb = new StringBuilder();
+                    int count = 0;
+                    for (Widget child : children)
+                    {
+                        if (child.getItemId() > 0 && child.getItemQuantity() > 0)
+                        {
+                            String name = itemUtils.getItemName(client, child.getItemId());
+                            if (name == null) name = "id:" + child.getItemId();
+                            sb.append(name).append("(x").append(child.getItemQuantity()).append(") ");
+                            if (++count >= 20) { sb.append("..."); break; }
+                        }
+                    }
+                    return count == 0 ? "NO_ITEMS_VISIBLE" : sb.toString();
+                });
+                System.out.println("[ClaudeBot] BankWithdraw: search for '" + itemName + "' found nothing. Bank contains: " + visibleItems);
+            }
+            catch (Throwable t)
+            {
+                System.out.println("[ClaudeBot] BankWithdraw: debug failed: " + t.getMessage());
+            }
             closeSearch(client, human, clientThread);
             return ActionResult.failure(ActionType.BANK_WITHDRAW,
                 "Bank withdraw: item not found after search for " + itemName);

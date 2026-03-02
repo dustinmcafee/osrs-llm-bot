@@ -112,8 +112,16 @@ public class SystemPromptBuilder
         + "   Example: {\"action\":\"SHOP_SELL\",\"name\":\"Copper ore\",\"quantity\":10}\n\n"
 
         + "### Grand Exchange\n"
-        + "28 GE_BUY — Buy from GE. Fields: name, quantity, x (price, 0=market price)\n"
-        + "29 GE_SELL — Sell on GE. Fields: name, quantity\n\n"
+        + "28 GE_BUY — Buy from GE. Fields: name, quantity, price (0=market price, >0=exact gp, <0=click +5% that many times e.g. -2=+10%)\n"
+        + "   To buy instantly: use price=-2 (overpay +10%). Items may not buy at market price.\n"
+        + "29 GE_SELL — Sell on GE. Fields: name, quantity, price (0=market price, >0=exact gp, <0=click -5% that many times e.g. -2=-10%)\n"
+        + "   To sell instantly: use price=-2 (undercut -10%). Items may not sell at market price.\n"
+        + "42 GE_COLLECT — Collect completed GE offers to inventory. GE must be open ([GE_OPEN] in environment). No fields.\n"
+        + "   Example: {\"action\":\"GE_COLLECT\"}\n"
+        + "   Use after GE_BUY/GE_SELL when [GE_OFFERS] shows BOUGHT/SOLD items. Always collect before closing GE.\n"
+        + "43 GE_ABORT — Cancel/abort a pending GE offer. GE must be open. Fields: name (item name of the offer to cancel)\n"
+        + "   Example: {\"action\":\"GE_ABORT\",\"name\":\"Steel platebody\"}\n"
+        + "   Use when you want to cancel a BUYING/SELLING offer. After aborting, use GE_COLLECT to retrieve your items/coins.\n\n"
 
         + "### Combat & Prayer\n"
         + "17 SPECIAL_ATTACK — Activate special attack. No fields.\n"
@@ -166,7 +174,8 @@ public class SystemPromptBuilder
         + "21 CLICK_WIDGET — Click a UI widget at pixel coordinates. ONLY for interface buttons, never for game-world objects.\n"
         + "   Fields: x, y (screen pixel coordinates), option (optional: \"right\" for right-click)\n"
         + "31 TYPE_TEXT — Type text into a chatbox/input. Fields: text, option (optional: \"enter\" to press enter after)\n"
-        + "33 PRESS_KEY — Press a keyboard key. Fields: name (key name like \"space\", \"enter\", \"escape\")\n\n"
+        + "33 PRESS_KEY — Press a keyboard key. Fields: name (key name like \"space\", \"enter\", \"escape\")\n"
+        + "   To close any open interface (shop, GE, bank, etc.): {\"action\":\"PRESS_KEY\",\"name\":\"escape\"}\n\n"
 
         + "### Other\n"
         + "16 WAIT — Wait a number of game ticks (1 tick = 0.6s). Fields: ticks\n"
@@ -200,7 +209,8 @@ public class SystemPromptBuilder
         + "16. **STUCK handling**: If [STATUS] shows STUCK, you MUST take action to unstick. NEVER just WAIT when stuck. If STUCK at a skilling spot, click a DIFFERENT nearby rock/tree/fishing spot. If STUCK while walking, use PATH_TO to a slightly different coordinate. Stuck means your current approach failed — change it.\n"
         + "17. **Full inventory (28/28)**: You cannot gather more items. Decide what to do with what you have — bank, drop, sell, process (smelt, cook, fletch, alch, smith), or move on to a different activity. Do NOT just WAIT with a full inventory.\n"
         + "18. **Never stop working.** There is always something productive to do. If your current task is blocked or complete, set a new goal and keep going. NEVER use WAIT repeatedly with no plan. NEVER declare \"session complete\" or \"mission accomplished\" — sessions don't end.\n"
-        + "19. **Fleeing**: When HP is critically low and you need to escape, use PATH_TO with \"fleeing\":true to flee to the nearest bank or safe area. This skips combat checks and auto-enables running. Also flee if you encounter aggressive NPCs that are too strong for your combat level — do not return to that area until you can win the fight.\n"
+        + "19. **Fleeing**: When HP is critically low and you need to escape, FIRST disable auto-retaliate (SET_AUTO_RETALIATE off) so you don't get dragged into combat while running, THEN use PATH_TO with \"fleeing\":true. This skips combat checks and auto-enables running. Also flee if you encounter aggressive NPCs that are too strong for your combat level — do not return to that area until you can win the fight.\n"
+        + "19b. **Auto-retaliate discipline**: ALWAYS enable auto-retaliate before starting combat (so you auto-fight back efficiently). ALWAYS disable it before fleeing or skilling near aggressive NPCs (so you don't get stuck fighting). Check AutoRet in [ENVIRONMENT] — if it's already in the right state, skip the toggle.\n"
         + "20. **Death**: If you die, you respawn at Lumbridge with 3 items kept (0 if [SKULLED], +1 with Protect Item prayer). Your other items are in a gravestone at your death location for 15 minutes. If you lost valuable gear, PATH_TO your death location and INTERACT_NPC(Grave, Loot) to recover. If you only lost cheap items, don't bother — move on.\n\n"
 
         // ── Common Patterns ──────────────────────────────────────────────

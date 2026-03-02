@@ -48,22 +48,75 @@ public class MakeItemAction
             return ActionResult.failure(ActionType.MAKE_ITEM, "No item name provided");
         }
 
-        // Phase 1: Search make interface widgets on client thread
-        Point itemPoint;
-        try
+        // Phase 1: Poll for make interface to appear (may take a tick after clicking object)
+        Point itemPoint = null;
+        int maxAttempts = 10; // ~3 seconds (300ms * 10)
+        for (int attempt = 0; attempt < maxAttempts; attempt++)
         {
-            itemPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
-                for (int groupId : MAKE_GROUPS)
+            try
+            {
+                itemPoint = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    for (int groupId : MAKE_GROUPS)
+                    {
+                        Point found = searchMakeGroup(client, itemManager, groupId, itemName);
+                        if (found != null) return found;
+                    }
+                    return null;
+                });
+            }
+            catch (Throwable t)
+            {
+                return ActionResult.failure(ActionType.MAKE_ITEM, "Make interface lookup failed: " + t.getMessage());
+            }
+
+            if (itemPoint != null) break;
+
+            // Check if ANY make interface is visible (item not found vs interface not open)
+            try
+            {
+                String visCheck = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                    // Check known make groups
+                    for (int groupId : MAKE_GROUPS)
+                    {
+                        Widget root = client.getWidget(groupId, 0);
+                        if (root != null && !root.isHidden())
+                            return "KNOWN:" + groupId;
+                    }
+                    // Brute-force scan: check groups 0-1000 for any visible widget
+                    // (only on last attempt to avoid spam)
+                    return null;
+                });
+                if (visCheck != null)
                 {
-                    Point found = searchMakeGroup(client, itemManager, groupId, itemName);
-                    if (found != null) return found;
+                    System.out.println("[MakeItem] Interface visible: " + visCheck);
+                    // Interface is open but item not found — don't keep polling
+                    break;
                 }
-                return null;
-            });
-        }
-        catch (Throwable t)
-        {
-            return ActionResult.failure(ActionType.MAKE_ITEM, "Make interface lookup failed: " + t.getMessage());
+                // On last attempt, do a broad scan to find mystery interfaces
+                if (attempt == maxAttempts - 2)
+                {
+                    String broadScan = ClientThreadRunner.runOnClientThread(clientThread, () -> {
+                        StringBuilder sb = new StringBuilder();
+                        for (int g = 0; g < 1000; g++)
+                        {
+                            Widget w = client.getWidget(g, 0);
+                            if (w != null && !w.isHidden())
+                            {
+                                sb.append(g).append(" ");
+                            }
+                        }
+                        return sb.length() > 0 ? sb.toString() : "NONE";
+                    });
+                    System.out.println("[MakeItem] Broad widget scan - visible groups: " + broadScan);
+                }
+            }
+            catch (Throwable ignored) {}
+
+            // Interface not open yet — wait and retry
+            if (attempt < maxAttempts - 1)
+            {
+                human.getTimingEngine().sleep(300);
+            }
         }
 
         if (itemPoint == null)

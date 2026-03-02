@@ -251,6 +251,32 @@ public interface ClaudeBotConfig extends Config
         return "";
     }
 
+    @Range(min = 0, max = 100)
+    @ConfigItem(
+        keyName = "geBuyMaxOverpayPct",
+        name = "GE Buy Max Overpay %",
+        description = "Max % above GE guide price for buy orders. 0 = no limit.",
+        section = behaviorSection,
+        position = 11
+    )
+    default int geBuyMaxOverpayPct()
+    {
+        return 10;
+    }
+
+    @Range(min = 0, max = 100)
+    @ConfigItem(
+        keyName = "geSellMaxUndercutPct",
+        name = "GE Sell Max Undercut %",
+        description = "Max % below GE guide price for sell orders. 0 = no limit.",
+        section = behaviorSection,
+        position = 12
+    )
+    default int geSellMaxUndercutPct()
+    {
+        return 20;
+    }
+
     enum WorldHopType
     {
         FREE("Free worlds only"),

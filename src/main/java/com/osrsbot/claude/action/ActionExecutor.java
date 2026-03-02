@@ -298,7 +298,8 @@ public class ActionExecutor
                         "The Grand Exchange is currently unavailable. Come back in a few hours. "
                         + "Buy items from NPC shops, gather resources yourself, or find another way.");
                 }
-                return GeBuyAction.execute(client, humanSimulator, clientThread, action);
+                return GeBuyAction.execute(client, humanSimulator, itemManager, clientThread, action,
+                    config.geBuyMaxOverpayPct());
             case GE_SELL:
                 if (!config.geEnabled())
                 {
@@ -306,7 +307,22 @@ public class ActionExecutor
                         "The Grand Exchange is currently unavailable. Come back in a few hours. "
                         + "Sell items to NPC shops or drop them instead.");
                 }
-                return GeSellAction.execute(client, humanSimulator, itemManager, clientThread, action);
+                return GeSellAction.execute(client, humanSimulator, itemManager, clientThread, action,
+                    config.geSellMaxUndercutPct());
+            case GE_COLLECT:
+                if (!config.geEnabled())
+                {
+                    return ActionResult.failure(ActionType.GE_COLLECT,
+                        "The Grand Exchange is currently unavailable.");
+                }
+                return GeCollectAction.execute(client, humanSimulator, clientThread, action);
+            case GE_ABORT:
+                if (!config.geEnabled())
+                {
+                    return ActionResult.failure(ActionType.GE_ABORT,
+                        "The Grand Exchange is currently unavailable.");
+                }
+                return GeAbortAction.execute(client, humanSimulator, itemManager, clientThread, action);
             case OPEN_TAB:
                 return OpenTabAction.execute(client, humanSimulator, clientThread, action);
             case TYPE_TEXT:
