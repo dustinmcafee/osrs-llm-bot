@@ -59,6 +59,9 @@ public class ActionExecutor
     @Inject
     private com.osrsbot.claude.pathfinder.PathfinderService pathfinderService;
 
+    @Inject
+    private com.osrsbot.claude.state.GameStateReader gameStateReader;
+
     private ExecutorService executor;
 
     private volatile BotAction currentAction;
@@ -185,7 +188,7 @@ public class ActionExecutor
             {
                 System.out.println("[ClaudeBot] Executing action: " + action.getType() +
                     " name=" + action.getName() + " option=" + action.getOption());
-                lastResult = executeAction(action);
+                lastResult = executeWithFeedback(action);
                 recentResults.add(new ExecutedAction(action, lastResult));
                 System.out.println("[ClaudeBot] Action " + action.getType() + ": " +
                     (lastResult.isSuccess() ? "OK" : "FAIL - " + lastResult.getMessage()));
@@ -230,6 +233,99 @@ public class ActionExecutor
                 executing.set(false);
             }
         });
+    }
+
+    /**
+     * Brief wait after an action's click before checking the chat buffer for
+     * engine-emitted reasons. One game tick (600 ms) is enough to capture
+     * "You need a … level of N", "You can't reach that", "I can't use that
+     * here", etc., without holding up the next action significantly.
+     */
+    private static final long FEEDBACK_PROBE_DELAY_MS = 600L;
+
+    /**
+     * Action types that DO NOT need post-execution message attribution:
+     *   - WAIT_ANIMATION, INTERACT_OBJECT — already do their own probe (with
+     *     specialized phrasing) and consume the messages, so the wrap would
+     *     be a redundant 600 ms wait that finds nothing.
+     *   - WAIT — pure timer, no engine interaction.
+     *   - PATH_TO — long-running, has its own per-step feedback loop.
+     *   - ROTATE_CAMERA, OPEN_TAB — local UI only, no chat possible.
+     *   - WORLD_HOP, MINIMAP_WALK, WALK_TO — movement only; rarely
+     *     produce skill-rejection chat that the LLM can act on.
+     *   - TYPE_TEXT, PRESS_KEY, CLEAR_ACTION_QUEUE — input/synthetic.
+     * Every other action — even ones that "always succeed" today — gets the
+     * wrap, so future engine-side rejections surface to the LLM verbatim
+     * without needing per-action plumbing.
+     */
+    private static final java.util.EnumSet<ActionType> NO_FEEDBACK_PROBE = java.util.EnumSet.of(
+        ActionType.WAIT_ANIMATION,
+        ActionType.WAIT,
+        ActionType.PATH_TO,
+        ActionType.ROTATE_CAMERA,
+        ActionType.OPEN_TAB,
+        ActionType.WORLD_HOP,
+        ActionType.MINIMAP_WALK,
+        ActionType.WALK_TO,
+        ActionType.TYPE_TEXT,
+        ActionType.PRESS_KEY,
+        ActionType.CLEAR_ACTION_QUEUE
+    );
+
+    /**
+     * Wraps {@link #executeAction(BotAction)} with generic message attribution:
+     * snapshots the chat sequence number BEFORE the action runs, calls the
+     * action, then waits one game tick for any engine-emitted chat to land
+     * and appends those messages to the result. The seq snapshot guarantees
+     * messages from PRIOR actions cannot be misattributed (the watermark in
+     * GameStateReader.getMessagesSince filters anything already consumed).
+     *
+     * Actions that have their own probe (INTERACT_OBJECT, WAIT_ANIMATION) or
+     * cannot produce engine chat (WAIT, ROTATE_CAMERA, …) are listed in
+     * {@link #NO_FEEDBACK_PROBE} and skip the wait+attach entirely.
+     */
+    private ActionResult executeWithFeedback(BotAction action)
+    {
+        if (gameStateReader == null || NO_FEEDBACK_PROBE.contains(action.getType()))
+        {
+            return executeAction(action);
+        }
+
+        long seqBefore = gameStateReader.getCurrentMessageSequence();
+        ActionResult result = executeAction(action);
+
+        // Brief wait for the engine to emit any chat in response to the click.
+        try
+        {
+            Thread.sleep(FEEDBACK_PROBE_DELAY_MS);
+        }
+        catch (InterruptedException e)
+        {
+            Thread.currentThread().interrupt();
+            return result;
+        }
+
+        java.util.List<String> messages = gameStateReader.getMessagesSince(seqBefore);
+        if (messages.isEmpty()) return result;
+
+        // Mark consumed so the same lines don't also appear in the next
+        // tick's [GAME_MESSAGES] block — model sees each line exactly once,
+        // attached to the action that triggered it.
+        gameStateReader.markMessagesConsumed(gameStateReader.getCurrentMessageSequence());
+
+        StringBuilder suffix = new StringBuilder(" Game said: ");
+        for (int i = 0; i < messages.size(); i++)
+        {
+            if (i > 0) suffix.append(" | ");
+            suffix.append("\"").append(messages.get(i)).append("\"");
+        }
+
+        String existing = result.getMessage() != null ? result.getMessage() : (result.isSuccess() ? "OK" : "");
+        return ActionResult.builder()
+            .success(result.isSuccess())
+            .actionType(result.getActionType())
+            .message(existing + suffix.toString())
+            .build();
     }
 
     private ActionResult executeAction(BotAction action)
@@ -344,7 +440,7 @@ public class ActionExecutor
                 return PathToAction.execute(client, humanSimulator, pathfinderService,
                     objectUtils, clientThread, action);
             case WAIT_ANIMATION:
-                return WaitAnimationAction.execute(client, humanSimulator, clientThread, action);
+                return WaitAnimationAction.execute(client, humanSimulator, clientThread, gameStateReader, action);
             case SET_AUTO_RETALIATE:
                 return SetAutoRetaliateAction.execute(client, humanSimulator, clientThread, action);
             default:

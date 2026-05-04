@@ -26,6 +26,25 @@ public class ResponseParser
     // Tracks consecutive all-WAIT responses to detect idle loops
     private int consecutiveWaitCount = 0;
 
+    // Tracks how many times each kind of schema-drift mistake has happened in this session.
+    // Used to escalate the wording of warnings/errors fed back to the LLM so repeated drift
+    // gets louder instead of being lost in normal action results.
+    private final Map<String, Integer> driftCounts = new HashMap<>();
+
+    /**
+     * Increments the count for this drift key and decorates the message accordingly.
+     * - 1st occurrence: returned unchanged (just a normal warning).
+     * - 2nd occurrence: prefixed with "REPEATED MISTAKE (2x):".
+     * - 3rd+:           prefixed with "REPEATED MISTAKE (Nx) — STOP DOING THIS:".
+     */
+    private String escalate(String key, String message)
+    {
+        int count = driftCounts.merge(key, 1, Integer::sum);
+        if (count == 1) return message;
+        if (count == 2) return "REPEATED MISTAKE (2x): " + message;
+        return "REPEATED MISTAKE (" + count + "x) — STOP DOING THIS: " + message;
+    }
+
     /**
      * Maps common LLM-invented action names to real ActionTypes + default options.
      * Small local models often use natural-language names instead of our exact enum values.
@@ -58,6 +77,8 @@ public class ResponseParser
 
         // NPC interactions
         alias("ATTACK", ActionType.INTERACT_NPC, "Attack");
+        alias("ATTACK_NPC", ActionType.INTERACT_NPC, "Attack");
+        alias("KILL", ActionType.INTERACT_NPC, "Attack");
         alias("FIGHT", ActionType.INTERACT_NPC, "Attack");
         alias("TALK", ActionType.INTERACT_NPC, "Talk-to");
         alias("TALK_TO", ActionType.INTERACT_NPC, "Talk-to");
@@ -288,6 +309,7 @@ public class ResponseParser
                                     + "USE_ITEM_ON_OBJECT, PRESS_KEY, CAST_SPELL, TOGGLE_RUN, SET_AUTO_RETALIATE. "
                                     + "For smelting/cooking: use INTERACT_OBJECT(Furnace/Range) to open interface, then MAKE_ITEM to select what to make. "
                                     + "Use \"name\" for the target and \"option\" for the verb (e.g. Mine, Attack, Pick).";
+                                err = escalate("UNKNOWN_ACTION:" + actionStr, err);
                                 System.err.println("[ClaudeBot] " + err);
                                 parseErrors.add(err);
                                 continue;
@@ -375,23 +397,36 @@ public class ResponseParser
                     && (type == ActionType.INTERACT_OBJECT))
                 {
                     action.setName(action.getObject());
-                    String fix = "Auto-fixed: used \"object\" field as \"name\" for INTERACT_OBJECT. Use \"name\" next time.";
+                    String fix = escalate("FIELD:object_to_name:INTERACT_OBJECT",
+                        "Auto-fixed: used \"object\" field as \"name\" for INTERACT_OBJECT. Use \"name\" next time.");
                     System.out.println("[ClaudeBot] " + fix);
                     if (action.getParseWarning() == null) action.setParseWarning(fix);
                 }
 
-                // Auto-recover "item" field → "name" for MAKE_ITEM
+                // Auto-recover "item" field → "name" for actions that take an inventory/item identifier
+                // in their "name" slot (MAKE_ITEM, bank ops, ground-item pickup, eat/drop/equip).
                 if (action.getName() == null && action.getItem() != null
-                    && (type == ActionType.MAKE_ITEM))
+                    && (type == ActionType.MAKE_ITEM
+                        || type == ActionType.BANK_DEPOSIT
+                        || type == ActionType.BANK_WITHDRAW
+                        || type == ActionType.PICKUP_ITEM
+                        || type == ActionType.EAT_FOOD
+                        || type == ActionType.DROP_ITEM
+                        || type == ActionType.EQUIP_ITEM))
                 {
                     action.setName(action.getItem());
-                    System.out.println("[ClaudeBot] Auto-fixed: used \"item\" field as \"name\" for MAKE_ITEM.");
+                    String fix = escalate("FIELD:item_to_name:" + type.name(),
+                        "Auto-fixed: used \"item\" as \"name\" for " + type.name()
+                            + ". Use \"name\" next time, e.g. {\"action\":\"" + type.name() + "\",\"name\":\"...\"}.");
+                    System.out.println("[ClaudeBot] " + fix);
+                    if (action.getParseWarning() == null) action.setParseWarning(fix);
                 }
 
                 // Validate required fields for key action types
                 String validationError = validateRequiredFields(type, action);
                 if (validationError != null)
                 {
+                    validationError = escalate("VALIDATE:" + type.name(), validationError);
                     System.err.println("[ClaudeBot] " + validationError);
                     parseErrors.add(validationError);
                     continue;

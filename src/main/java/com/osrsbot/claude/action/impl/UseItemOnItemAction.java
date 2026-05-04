@@ -16,7 +16,8 @@ public class UseItemOnItemAction
     private static final int VERIFY_POLL_MS = 100;
     private static final int VERIFY_TIMEOUT_MS = 1800; // 3 game ticks
 
-    public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils, ClientThread clientThread, BotAction action)
+    public static ActionResult execute(Client client, HumanSimulator human, ItemUtils itemUtils,
+                                        ClientThread clientThread, BotAction action)
     {
         if (action.getItem1() == null || action.getItem1().isEmpty())
         {
@@ -83,7 +84,11 @@ public class UseItemOnItemAction
         human.moveAndClick(p2.x, p2.y);
 
         // Phase 3: Wait for inventory to change (item consumed or transformed).
-        // May timeout if the action opens a Make interface instead — that's OK.
+        // May timeout legitimately for slow actions (firemaking takes >2 ticks
+        // for the log to actually convert) or when the click opens a Make
+        // interface. Don't infer failure from no-change — let the
+        // ActionExecutor's generic message-attribution wrap and the following
+        // WAIT_ANIMATION provide the real success/failure signal.
         waitForInventoryChange(client, clientThread, totalBefore, human);
 
         return ActionResult.success(ActionType.USE_ITEM_ON_ITEM);
@@ -98,9 +103,10 @@ public class UseItemOnItemAction
 
     /**
      * Polls until total inventory item count changes or timeout.
+     * @return true if the count changed before the deadline, false on timeout
      */
-    private static void waitForInventoryChange(Client client, ClientThread clientThread,
-                                                 int countBefore, HumanSimulator human)
+    private static boolean waitForInventoryChange(Client client, ClientThread clientThread,
+                                                    int countBefore, HumanSimulator human)
     {
         long deadline = System.currentTimeMillis() + VERIFY_TIMEOUT_MS;
         while (System.currentTimeMillis() < deadline)
@@ -110,10 +116,11 @@ public class UseItemOnItemAction
             {
                 int current = ClientThreadRunner.runOnClientThread(clientThread,
                     () -> countTotalInventoryItems(client));
-                if (current != countBefore) return;
+                if (current != countBefore) return true;
             }
             catch (Throwable t) {}
         }
+        return false;
     }
 
     /**

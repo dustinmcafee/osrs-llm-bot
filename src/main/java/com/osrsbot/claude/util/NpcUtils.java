@@ -15,6 +15,15 @@ public class NpcUtils
 
     public NPC findNearest(Client client, String name)
     {
+        // The LLM tends to copy NPC names verbatim from the prompt's display
+        // string (e.g. "Dark wizard(lvl:7)" from a [NEARBY_NPCS] entry like
+        // "Dark wizard(lvl:7)(x2) [Attack]"), which never matches an in-game
+        // npc.getName(). Strip parenthesised and bracketed annotations so the
+        // canonical NPC name (no OSRS NPC has either character in its name)
+        // is what we compare against.
+        String cleanedName = stripDisplayMetadata(name);
+        if (cleanedName == null || cleanedName.isEmpty()) return null;
+
         Player local = client.getLocalPlayer();
         if (local == null) return null;
 
@@ -23,7 +32,7 @@ public class NpcUtils
 
         for (NPC npc : client.getNpcs())
         {
-            if (npc.getName() != null && npc.getName().equalsIgnoreCase(name))
+            if (npc.getName() != null && npc.getName().equalsIgnoreCase(cleanedName))
             {
                 int dist = npc.getWorldLocation().distanceTo(local.getWorldLocation());
                 if (dist < nearestDist)
@@ -35,6 +44,20 @@ public class NpcUtils
         }
 
         return nearest;
+    }
+
+    /**
+     * Strips display-only annotations the LLM may copy from the prompt:
+     * parenthesised content like "(lvl:7)", "(x2)", "(level-15)" and
+     * bracketed option lists like "[Attack]". Returns the trimmed name.
+     * No real OSRS NPC name contains "(" or "[", so this is lossless.
+     */
+    static String stripDisplayMetadata(String name)
+    {
+        if (name == null) return null;
+        return name.replaceAll("\\s*\\([^)]*\\)\\s*", " ")
+                   .replaceAll("\\s*\\[[^\\]]*\\]\\s*", " ")
+                   .trim();
     }
 
     public int getMenuActionIndex(NPC npc, String option)

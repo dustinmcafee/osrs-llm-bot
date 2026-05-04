@@ -14,7 +14,8 @@ import net.runelite.client.callback.ClientThread;
 @Slf4j
 public class InteractObjectAction
 {
-    public static ActionResult execute(Client client, HumanSimulator human, ObjectUtils objectUtils, ClientThread clientThread, BotAction action)
+    public static ActionResult execute(Client client, HumanSimulator human, ObjectUtils objectUtils,
+                                        ClientThread clientThread, BotAction action)
     {
         if (action.getName() == null || action.getName().isEmpty())
         {
@@ -201,6 +202,11 @@ public class InteractObjectAction
         });
 
         human.shortPause();
+        // Generic post-click message attribution (any "You need …", "You swing
+        // your axe", etc.) is handled by ActionExecutor.executeWithFeedback —
+        // attach-only, no auto-flip-to-FAIL. Trying to classify which messages
+        // mean "rejected" here was the wrong call: messages like "You swing
+        // your axe at the tree" are progress markers, not rejections.
         return ActionResult.success(ActionType.INTERACT_OBJECT);
     }
 }

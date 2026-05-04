@@ -5,10 +5,13 @@ import com.osrsbot.claude.action.ActionType;
 import com.osrsbot.claude.action.BotAction;
 import com.osrsbot.claude.action.LastInteractedObject;
 import com.osrsbot.claude.human.HumanSimulator;
+import com.osrsbot.claude.state.GameStateReader;
 import com.osrsbot.claude.util.ClientThreadRunner;
 import net.runelite.api.*;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.client.callback.ClientThread;
+
+import java.util.List;
 
 /**
  * Waits until the player's current animation completes (returns to IDLE).
@@ -30,13 +33,22 @@ public class WaitAnimationAction
     /** Max time to wait for an animation to START before giving up */
     private static final int START_GRACE_TICKS = 5; // 3 seconds
 
-    public static ActionResult execute(Client client, HumanSimulator human, ClientThread clientThread, BotAction action)
+    public static ActionResult execute(Client client, HumanSimulator human, ClientThread clientThread,
+                                        GameStateReader gameStateReader, BotAction action)
     {
         int maxTicks = action.getTicks() > 0 ? action.getTicks() : DEFAULT_MAX_TICKS;
         long timeoutMs = (long) maxTicks * MS_PER_TICK;
         long deadline = System.currentTimeMillis() + timeoutMs;
         long startGraceDeadline = System.currentTimeMillis() + ((long) START_GRACE_TICKS * MS_PER_TICK);
         boolean checkCombat = !"ignore_combat".equalsIgnoreCase(action.getOption());
+
+        // Snapshot the message sequence at action start. Any chat message that
+        // arrives after this point is attributable to the wait — typically the
+        // engine's reason for the preceding interaction failing (e.g. "You
+        // need a Woodcutting level of 30"). Older buffered messages from
+        // earlier failed attempts are filtered out by the seq comparison.
+        final long messageSeqAtStart = gameStateReader != null
+            ? gameStateReader.getCurrentMessageSequence() : 0L;
 
         // Snapshot inventory item count before the animation, so we can detect
         // whether the action produced a result (e.g., gained ore/log/fish)
@@ -157,10 +169,15 @@ public class WaitAnimationAction
                     }
                     else
                     {
-                        // Truly idle, never started animating — fail fast
+                        // Truly idle, never started animating — fail fast.
+                        // Attach any chat messages emitted since this wait began;
+                        // they typically explain WHY the preceding action didn't
+                        // produce an animation (skill level, range, requirements).
+                        String reason = collectRejectionContext(gameStateReader, messageSeqAtStart);
                         return ActionResult.failure(ActionType.WAIT_ANIMATION,
                             "Player never started animating (waited " + START_GRACE_TICKS + " ticks). "
-                            + "The preceding action may have failed or the target may be unavailable.");
+                            + "The preceding action may have failed or the target may be unavailable."
+                            + reason);
                     }
                 }
             }
@@ -177,8 +194,36 @@ public class WaitAnimationAction
             return buildCompletionResult(client, clientThread, invCountBefore,
                 observedAnimId, true);
         }
+        String reason = collectRejectionContext(gameStateReader, messageSeqAtStart);
         return ActionResult.failure(ActionType.WAIT_ANIMATION,
-            "No animation detected within " + maxTicks + " ticks — the action likely failed.");
+            "No animation detected within " + maxTicks + " ticks — the action likely failed."
+            + reason);
+    }
+
+    /**
+     * Reads any chat messages that landed since this wait began and returns
+     * them as a quoted suffix suitable for appending to a failure description.
+     * Returns the empty string if none — the seq snapshot at action start
+     * guarantees no messages from earlier failed attempts can leak in.
+     *
+     * Marks the messages consumed so they don't also appear in the next tick's
+     * standalone [GAME_MESSAGES] block — the LLM sees each line exactly once,
+     * attached to the specific action it explains.
+     */
+    private static String collectRejectionContext(GameStateReader reader, long sinceSeq)
+    {
+        if (reader == null) return "";
+        List<String> recent = reader.getMessagesSince(sinceSeq);
+        if (recent.isEmpty()) return "";
+        reader.markMessagesConsumed(reader.getCurrentMessageSequence());
+
+        StringBuilder sb = new StringBuilder(" Game said: ");
+        for (int i = 0; i < recent.size(); i++)
+        {
+            if (i > 0) sb.append(" | ");
+            sb.append("\"").append(recent.get(i)).append("\"");
+        }
+        return sb.toString();
     }
 
     /**

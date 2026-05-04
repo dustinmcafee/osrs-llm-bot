@@ -101,16 +101,62 @@ public class GameStateReader
     private int lastDestinationY = 0;
 
     /**
+     * One entry in the game-message buffer. Each message carries a monotonic
+     * sequence number assigned at the moment it lands; this lets action
+     * executors safely attribute messages to themselves by snapshotting the
+     * current sequence at action start and only reading messages with a
+     * higher sequence afterwards. Without this, an old "You need a [skill]
+     * level of N" rejection would falsely attach to a later, unrelated
+     * action while it remained in the rolling buffer.
+     */
+    public static final class TimestampedMessage
+    {
+        public final long sequence;
+        public final long timestampMs;
+        public final String message;
+        TimestampedMessage(long sequence, long timestampMs, String message)
+        {
+            this.sequence = sequence;
+            this.timestampMs = timestampMs;
+            this.message = message;
+        }
+    }
+
+    /**
      * Event-based game message buffer. Messages are added by the plugin via
      * onGameMessage() when ChatMessage events fire. This is far more reliable
      * than iterating client.getMessages() which has no guaranteed order.
+     * Stored newest-first (addFirst). Each entry carries a monotonic sequence
+     * for action-attributed reads — see {@link #getMessagesSince(long)}.
      */
-    private final ConcurrentLinkedDeque<String> gameMessageBuffer = new ConcurrentLinkedDeque<>();
+    private final ConcurrentLinkedDeque<TimestampedMessage> gameMessageBuffer = new ConcurrentLinkedDeque<>();
     private static final int MAX_MESSAGE_BUFFER = 20;
 
     /**
-     * Separate buffer for game messages that indicate action failure.
-     * These get injected into [ACTION_RESULTS] as explicit FAILED entries.
+     * Monotonic sequence counter — incremented on every onGameMessage call.
+     * Action executors snapshot this before firing and use the snapshot as
+     * a "since" filter when reading recent messages, ensuring stale messages
+     * from prior failed attempts cannot be misattributed to a fresh action.
+     */
+    private final java.util.concurrent.atomic.AtomicLong messageSequence =
+        new java.util.concurrent.atomic.AtomicLong(0);
+
+    /**
+     * High-water mark of messages already consumed by action executors as
+     * attributed failure context. Messages at or below this sequence are
+     * skipped when building the per-tick [GAME_MESSAGES] block, so the LLM
+     * doesn't see the same line twice (once attached to its action result,
+     * once again in the messages list).
+     */
+    private volatile long messagesConsumedUpToSeq = 0;
+
+    /**
+     * Separate buffer for game messages that match a small allowlist of
+     * known-bad patterns. These get drained each tick and prepended to
+     * [ACTION_RESULTS] as explicit GAME_FAILURE entries — used as a fallback
+     * for failures that aren't tied to a specific action (e.g. an attacker
+     * lands on you mid-skilling). For action-attributed failures, use the
+     * timestamped {@link #gameMessageBuffer} via {@link #getMessagesSince(long)}.
      */
     private final ConcurrentLinkedDeque<String> failureMessageBuffer = new ConcurrentLinkedDeque<>();
 
@@ -140,12 +186,15 @@ public class GameStateReader
 
     /**
      * Called by ClaudeBotPlugin when a ChatMessage event fires.
-     * Maintains a chronological buffer of recent game messages.
+     * Maintains a chronological buffer of recent game messages, each
+     * stamped with a monotonic sequence number for safe attribution by
+     * concurrent action executors.
      */
     public void onGameMessage(String message)
     {
         if (message == null || message.isEmpty()) return;
-        gameMessageBuffer.addFirst(message);
+        long seq = messageSequence.incrementAndGet();
+        gameMessageBuffer.addFirst(new TimestampedMessage(seq, System.currentTimeMillis(), message));
         while (gameMessageBuffer.size() > MAX_MESSAGE_BUFFER)
         {
             gameMessageBuffer.removeLast();
@@ -159,6 +208,80 @@ public class GameStateReader
                 failureMessageBuffer.addFirst(message);
                 break;
             }
+        }
+    }
+
+    /**
+     * Snapshot the current message sequence. Call this BEFORE firing an
+     * action's actual game-side click. Any subsequent message will have a
+     * sequence strictly greater than the returned value, so the action
+     * can read only what landed after it began — no false positives from
+     * messages produced by previous action attempts.
+     */
+    public long getCurrentMessageSequence()
+    {
+        return messageSequence.get();
+    }
+
+    /**
+     * Returns all game messages with sequence strictly greater than BOTH
+     * the caller's sinceSeq AND the global "consumed" watermark. Messages
+     * already attributed to an earlier action's result (and marked consumed)
+     * cannot be re-attributed to a later action — preventing the
+     * "wrong-message-on-wrong-action" bleed seen when one action's seq
+     * snapshot was taken before the prior action's messages had landed.
+     *
+     * Returns messages in chronological (oldest-first) order.
+     */
+    public List<String> getMessagesSince(long sinceSeq)
+    {
+        long effectiveSince = Math.max(sinceSeq, messagesConsumedUpToSeq);
+        List<TimestampedMessage> snapshot = new ArrayList<>(gameMessageBuffer);
+        List<String> result = new ArrayList<>();
+        // Buffer is newest-first; iterate in reverse for chronological output.
+        for (int i = snapshot.size() - 1; i >= 0; i--)
+        {
+            TimestampedMessage tm = snapshot.get(i);
+            if (tm.sequence > effectiveSince)
+            {
+                result.add(tm.message);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Mark messages up to and including the given sequence as already
+     * surfaced to the LLM via an action result. They will be filtered out
+     * of subsequent [GAME_MESSAGES] blocks so the model doesn't see the
+     * same line attached to an action AND in the standalone messages list.
+     */
+    public void markMessagesConsumed(long upToSeq)
+    {
+        // Monotonic — never move the watermark backwards.
+        long current;
+        do
+        {
+            current = messagesConsumedUpToSeq;
+            if (upToSeq <= current) return;
+        }
+        while (!compareAndSetConsumed(current, upToSeq));
+    }
+
+    private boolean compareAndSetConsumed(long expect, long update)
+    {
+        // Single-writer volatile semantics are sufficient here: callers race
+        // only with a strictly increasing value, so a stale write will be
+        // overtaken on the next call. Using a synchronized block keeps the
+        // monotonic invariant under contention.
+        synchronized (this)
+        {
+            if (messagesConsumedUpToSeq == expect)
+            {
+                messagesConsumedUpToSeq = update;
+                return true;
+            }
+            return false;
         }
     }
 
@@ -184,6 +307,11 @@ public class GameStateReader
     {
         gameMessageBuffer.clear();
         failureMessageBuffer.clear();
+        synchronized (this)
+        {
+            messagesConsumedUpToSeq = 0;
+        }
+        messageSequence.set(0);
     }
 
     /**
@@ -1066,15 +1194,23 @@ public class GameStateReader
      * Drains recent game messages from the event-based buffer.
      * Each call returns only NEW messages since the last call, preventing
      * stale messages like "I can't reach that" from repeating on every tick.
+     * Messages already attributed to a specific action's result (via
+     * {@link #markMessagesConsumed(long)}) are skipped so the LLM doesn't
+     * see the same line twice in one prompt.
      */
     private List<String> readRecentGameMessages(int maxMessages)
     {
+        long consumed = messagesConsumedUpToSeq;
         List<String> messages = new ArrayList<>();
-        String msg;
-        while ((msg = gameMessageBuffer.pollFirst()) != null)
+        TimestampedMessage entry;
+        while ((entry = gameMessageBuffer.pollFirst()) != null)
         {
-            messages.add(msg);
-            if (messages.size() >= maxMessages) break;
+            if (entry.sequence > consumed)
+            {
+                messages.add(entry.message);
+                if (messages.size() >= maxMessages) break;
+            }
+            // entries at-or-below the consumed watermark are silently dropped
         }
         // Discard any remaining messages beyond the limit
         gameMessageBuffer.clear();
