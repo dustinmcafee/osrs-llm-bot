@@ -338,6 +338,60 @@ public class PathToAction
             steps++;
         }
 
+        // -- Final transport-tile check before returning control to the LLM --
+        // If the player ended this chunk standing on the start tile of a
+        // transport (e.g. a staircase) that's part of the planned path, fire
+        // the transport interact one more time. Without this, the chunk
+        // ends with the player parked AT the staircase but never clicked
+        // it — the model is then expected to re-issue PATH_TO to climb,
+        // which it often doesn't (it sees coordinates "near the bank" in
+        // the progress message and pivots to INTERACT_OBJECT instead).
+        // Cheap (one client-thread call + one menuAction) and only fires
+        // when the geometry actually warrants it.
+        try
+        {
+            WorldPoint finalPos = getPlayerPosition(client, clientThread);
+            if (finalPos != null && finalPos.getPlane() != targetPlane)
+            {
+                List<WorldPoint> finalPath = pathfinderService.getPath(
+                    finalPos, target, membersWorld, agilityLevel);
+                if (finalPath != null && !finalPath.isEmpty())
+                {
+                    int finalIdx = findNearestPathIndex(finalPath, finalPos);
+                    if (finalIdx >= 0 && finalIdx < finalPath.size() - 1)
+                    {
+                        int finalTransportIdx = findNextTransport(finalPath, finalIdx, pathfinderService, membersWorld);
+                        if (finalTransportIdx >= 0)
+                        {
+                            WorldPoint tStart = finalPath.get(finalTransportIdx);
+                            WorldPoint tEnd = finalPath.get(finalTransportIdx + 1);
+                            // Only auto-fire when player is already standing
+                            // on or adjacent to the transport's start tile —
+                            // otherwise we might walk somewhere unexpected.
+                            int distToTransport = finalPos.distanceTo(tStart);
+                            if (distToTransport <= ARRIVAL_DISTANCE)
+                            {
+                                Transport transport = pathfinderService.getTransportBetween(
+                                    tStart, tEnd, membersWorld);
+                                if (transport != null)
+                                {
+                                    System.out.println("[ClaudeBot] PATH_TO: chunk-end transport "
+                                        + transport.action + " " + transport.target
+                                        + " (player at " + finalPos + ", transportStart=" + tStart + ")");
+                                    doTransportInteract(client, human, objectUtils, clientThread, transport);
+                                    waitForPlayerToStop(client, clientThread, timing, 5000);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (Throwable t)
+        {
+            System.err.println("[ClaudeBot] PATH_TO: chunk-end transport check failed: " + t.getMessage());
+        }
+
         // Chunk complete — return progress with game state snapshot so Claude can
         // decide whether to keep walking, eat, interact with something nearby, etc.
         StringBuilder progressMsg = new StringBuilder();

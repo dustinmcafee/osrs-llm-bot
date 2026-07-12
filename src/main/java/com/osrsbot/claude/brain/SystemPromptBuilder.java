@@ -5,13 +5,35 @@ import javax.inject.Singleton;
 @Singleton
 public class SystemPromptBuilder
 {
+    /** @deprecated Use {@link #build(String, boolean)} so the thinking-mode
+     *  toggle from config can flow through. Kept for backwards compat. */
+    @Deprecated
     public String build(String taskDescription)
     {
-        return PROMPT_HEADER
-            + "## Your Task\n" + taskDescription + "\n\n"
-            + "You have been provided with OSRS wiki knowledge. Reference it to choose optimal "
-            + "training methods, locations, and equipment for your current levels.\n\n"
-            + PROMPT_BODY;
+        return build(taskDescription, false);
+    }
+
+    /**
+     * Builds the system prompt. When {@code enableThinking} is true, the
+     * Qwen 3 mode-toggle token "/think" is prepended so the model reliably
+     * emits {@code <think>…</think>} chains regardless of its default
+     * template. The bot's response parser already strips the JSON array
+     * out, so this only affects what the model produces — not what gets
+     * stored in conversation history.
+     */
+    public String build(String taskDescription, boolean enableThinking)
+    {
+        StringBuilder sb = new StringBuilder();
+        if (enableThinking)
+        {
+            sb.append("/think\n\n");
+        }
+        sb.append(PROMPT_HEADER)
+            .append("## Your Task\n").append(taskDescription).append("\n\n")
+            .append("You have been provided with OSRS wiki knowledge. Reference it to choose optimal ")
+            .append("training methods, locations, and equipment for your current levels.\n\n")
+            .append(PROMPT_BODY);
+        return sb.toString();
     }
 
     private static final String PROMPT_HEADER =

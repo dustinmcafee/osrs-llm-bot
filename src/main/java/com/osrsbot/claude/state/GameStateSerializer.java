@@ -1,5 +1,12 @@
 package com.osrsbot.claude.state;
 
+import com.osrsbot.claude.gear.GearRecommender;
+import com.osrsbot.claude.gear.RequirementAnnotator;
+import com.osrsbot.claude.gear.RequirementsRegistry;
+import com.osrsbot.claude.gear.UsageAnnotator;
+import net.runelite.api.Client;
+
+import javax.inject.Inject;
 import javax.inject.Singleton;
 import java.util.List;
 import java.util.Map;
@@ -8,6 +15,18 @@ import java.util.stream.Collectors;
 @Singleton
 public class GameStateSerializer
 {
+    @Inject
+    private Client client;
+
+    @Inject
+    private RequirementsRegistry requirementsRegistry;
+
+    @Inject
+    private GearRecommender gearRecommender;
+
+    @Inject
+    private UsageAnnotator usageAnnotator;
+
     // Standard OSRS XP table: XP_TABLE[i] = total XP needed for level i+1 (index 0 = level 1)
     private static final int[] XP_TABLE = {
         0, 83, 174, 276, 388, 512, 650, 801, 969, 1154,           // 1-10
@@ -25,8 +44,18 @@ public class GameStateSerializer
     {
         StringBuilder sb = new StringBuilder();
 
+        serializeVitals(sb, snapshot.getPlayer());
+        if (snapshot.getQuestHelperStep() != null)
+        {
+            sb.append("[QUEST_HELPER]\n");
+            for (String line : snapshot.getQuestHelperStep().split("\n"))
+            {
+                sb.append("  ").append(line).append("\n");
+            }
+        }
         serializePlayer(sb, snapshot.getPlayer(), snapshot.getEnvironment());
         serializeInventory(sb, snapshot.getInventory());
+        serializeBank(sb, snapshot.getBank());
         serializeEquipment(sb, snapshot.getEquipment());
         serializeNearby(sb, "NEARBY_NPCS", snapshot.getNearbyNpcs());
         serializeNearby(sb, "NEARBY_OBJECTS", snapshot.getNearbyObjects());
@@ -35,6 +64,39 @@ public class GameStateSerializer
         serializeEnvironment(sb, snapshot.getEnvironment());
 
         return sb.toString();
+    }
+
+    /**
+     * Top-of-prompt vitals block. The HP/Prayer/Run percentages and an
+     * explicit warning marker for low HP make it impossible for the model
+     * to confuse current health with the [XP] line's lifetime hitpoints
+     * XP. Placed before [PLAYER] / [STATUS] / [SKILLS] so it's the first
+     * runtime data the LLM reads each turn.
+     */
+    private void serializeVitals(StringBuilder sb, PlayerState p)
+    {
+        if (p == null) return;
+        int curHp = p.getCurrentHp();
+        int maxHp = Math.max(p.getMaxHp(), 1);
+        int hpPct = (curHp * 100) / maxHp;
+        int prayerPct = p.getMaxPrayer() > 0 ? (p.getCurrentPrayer() * 100) / p.getMaxPrayer() : 0;
+        int runPct = p.getRunEnergy();
+
+        sb.append("[VITALS] HP: ").append(curHp).append("/").append(maxHp)
+            .append(" (").append(hpPct).append("%)");
+        if (hpPct <= 30)
+        {
+            sb.append(" ⚠ DANGER — eat food or run; do NOT engage in combat");
+        }
+        else if (hpPct <= 50)
+        {
+            sb.append(" ⚠ low — consider eating food");
+        }
+        sb.append(" | Prayer: ").append(p.getCurrentPrayer()).append("/").append(p.getMaxPrayer())
+            .append(" (").append(prayerPct).append("%)");
+        sb.append(" | Run: ").append(runPct).append("%")
+            .append(p.isRunEnabled() ? " [ON]" : " [OFF]");
+        sb.append("\n");
     }
 
     private void serializePlayer(StringBuilder sb, PlayerState p, EnvironmentState env)
@@ -66,7 +128,9 @@ public class GameStateSerializer
                 sb.append("STUCK(").append(p.getStuckTicks()).append(" ticks)");
                 sb.append(" intended_dest:(").append(p.getDestinationX())
                   .append(",").append(p.getDestinationY()).append(")");
-                sb.append(" *** PATH BLOCKED — use PATH_TO or open nearby doors/gates ***");
+
+                // Check if a door/gate is blocking the path — name it explicitly
+                sb.append(" *** PATH BLOCKED — use PATH_TO to find a new route ***");
             }
             else
             {
@@ -129,7 +193,11 @@ public class GameStateSerializer
         appendXp(xp, "Def", p.getDefenceXp(), p.getDefenceLevel());
         appendXp(xp, "Rng", p.getRangedXp(), p.getRangedLevel());
         appendXp(xp, "Mag", p.getMagicXp(), p.getMagicLevel());
-        appendXp(xp, "HP", p.getHitpointsXp(), p.getHitpointsLevel());
+        // Renamed from "HP" to "HPxp" so the model can't conflate the [XP]
+        // line's lifetime hitpoints XP with the [PLAYER] line's current
+        // hitpoints (HP:5/23). Caused real bugs where the model thought
+        // it was at 93% health while actually at 5/23.
+        appendXp(xp, "HPxp", p.getHitpointsXp(), p.getHitpointsLevel());
         appendXp(xp, "Pray", p.getPrayerXp(), p.getPrayerLevel());
         appendXp(xp, "WC", p.getWoodcuttingXp(), p.getWoodcuttingLevel());
         appendXp(xp, "Mine", p.getMiningXp(), p.getMiningLevel());
@@ -181,9 +249,81 @@ public class GameStateSerializer
                     InventoryState.ItemSlot::getName,
                     Collectors.summingInt(InventoryState.ItemSlot::getQuantity)));
 
+            // Snapshot all item names so the usage annotator can verify tool
+            // prerequisites (e.g. Tinderbox required for burning logs).
+            final java.util.Set<String> itemNameSet = grouped.keySet();
+
             sb.append(grouped.entrySet().stream()
-                .map(e -> e.getKey() + "(x" + e.getValue() + ")")
+                .map(e -> e.getKey() + "(x" + e.getValue() + ")"
+                    + annotateItem(e.getKey())
+                    + annotateUsage(e.getKey(), itemNameSet))
                 .collect(Collectors.joining(" | ")));
+        }
+        sb.append("\n");
+    }
+
+    /** Compact " (✗ Burn: needs FM 30, Tinderbox; at fire/campfire)" suffix
+     *  when the player can't currently perform the item's primary use, or
+     *  empty string otherwise. Skipped when the annotator isn't injected. */
+    private String annotateUsage(String name, java.util.Set<String> inventoryItemNames)
+    {
+        if (usageAnnotator == null || client == null) return "";
+        return usageAnnotator.annotate(name, client, inventoryItemNames);
+    }
+
+    /** Compact "(✗ Atk:60, mem, Q:Lost City)" suffix when the player can't
+     *  use this item, or empty string otherwise. Defensive against null
+     *  registry / client (e.g. in unit tests). */
+    private String annotateItem(String name)
+    {
+        if (requirementsRegistry == null || client == null) return "";
+        RequirementsRegistry.Requirement req = requirementsRegistry.lookupItem(name);
+        if (req == null) return "";
+        return RequirementAnnotator.annotate(req, client);
+    }
+
+    private String annotateObject(String name)
+    {
+        if (requirementsRegistry == null || client == null) return "";
+        RequirementsRegistry.Requirement req = requirementsRegistry.lookupObject(name);
+        if (req == null) return "";
+        return RequirementAnnotator.annotate(req, client);
+    }
+
+    /** Serialize the bank as a single line, dropping the field entirely
+     *  when the bank container hasn't been populated this session.
+     *  Items are grouped by name (in case of stacks/duplicates), sorted
+     *  by quantity desc, capped to 60 entries to keep the prompt small.
+     *  When more than 60 items exist we append "+N more" so the model
+     *  knows the list is truncated. */
+    private static final int BANK_DISPLAY_CAP = 60;
+
+    private void serializeBank(StringBuilder sb, InventoryState bank)
+    {
+        if (bank == null || bank.getItems() == null || bank.getItems().isEmpty())
+        {
+            return;
+        }
+        Map<String, Integer> grouped = bank.getItems().stream()
+            .collect(Collectors.groupingBy(
+                InventoryState.ItemSlot::getName,
+                java.util.LinkedHashMap::new,
+                Collectors.summingInt(InventoryState.ItemSlot::getQuantity)));
+
+        List<Map.Entry<String, Integer>> sorted = new java.util.ArrayList<>(grouped.entrySet());
+        sorted.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+
+        sb.append("[BANK] (").append(bank.getUsedSlots()).append(" slots used) ");
+        int shown = Math.min(sorted.size(), BANK_DISPLAY_CAP);
+        for (int i = 0; i < shown; i++)
+        {
+            if (i > 0) sb.append(" | ");
+            Map.Entry<String, Integer> e = sorted.get(i);
+            sb.append(e.getKey()).append("(x").append(e.getValue()).append(")");
+        }
+        if (sorted.size() > shown)
+        {
+            sb.append(" | +").append(sorted.size() - shown).append(" more");
         }
         sb.append("\n");
     }
@@ -198,7 +338,13 @@ public class GameStateSerializer
         else
         {
             sb.append(equip.getSlots().values().stream()
-                .map(s -> s.getSlotName() + ":" + s.getName())
+                .map(s -> {
+                    String requirementBlock = annotateItem(s.getName());
+                    String tierStatus = gearRecommender != null
+                        ? gearRecommender.annotateEquipped(s.getName(), client) : "";
+                    String suffix = tierStatus.isEmpty() ? "" : " " + tierStatus;
+                    return s.getSlotName() + ":" + s.getName() + requirementBlock + suffix;
+                })
                 .collect(Collectors.joining(" | ")));
         }
         sb.append("\n");
@@ -239,6 +385,15 @@ public class GameStateSerializer
             if (nearest.getActions() != null && !nearest.getActions().isEmpty())
             {
                 entry.append(" [").append(String.join(",", nearest.getActions())).append("]");
+            }
+
+            // For objects (NEARBY_OBJECTS), annotate gather requirements right
+            // after the actions block. Tree level / rock mining level / etc.
+            // We only annotate this label — NPC requirements are encoded by
+            // combat level and don't fit our skills-based formula.
+            if ("NEARBY_OBJECTS".equals(label))
+            {
+                entry.append(annotateObject(nearest.getName()));
             }
 
             // Show positions for up to 5 closest instances (* marks nearest)

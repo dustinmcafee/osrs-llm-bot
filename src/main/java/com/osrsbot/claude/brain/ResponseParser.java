@@ -212,7 +212,7 @@ public class ResponseParser
         try
         {
             String cleaned = extractJsonArray(response);
-            JsonArray array = JsonParser.parseString(cleaned).getAsJsonArray();
+            JsonArray array = parseLenient(cleaned).getAsJsonArray();
 
             // Extract goal from first action object if present
             if (array.size() > 0 && array.get(0).isJsonObject())
@@ -508,19 +508,45 @@ public class ResponseParser
     }
 
     /**
-     * Extracts reasoning text from Claude's response (everything before the JSON array).
-     * Returns null if there's no reasoning text.
+     * Extracts the model's reasoning text from a response. Handles both:
+     * <ol>
+     *   <li>Free-form: prose / &lt;think&gt;...&lt;/think&gt; before a bare JSON array</li>
+     *   <li>Structured wrapper: {@code {"thinking": "...", "actions": [...]}}
+     *       — the format the constrained-output schema uses so the model
+     *       can still emit a chain of thought inside the JSON.</li>
+     * </ol>
+     * Returns null if no reasoning text is present.
      */
     public String extractReasoning(String response)
     {
         if (response == null) return null;
         String trimmed = response.trim();
 
-        // Strip code fences first
+        // Strip code fences first.
         String cleaned = trimmed;
         if (cleaned.contains("```"))
         {
             cleaned = cleaned.replaceAll("```[a-zA-Z]*\\s*", "").replace("```", "").trim();
+        }
+
+        // Wrapper-schema case: response starts with `{` and contains a
+        // "thinking" key. Try to parse and extract it before falling back
+        // to the prose-before-array path.
+        if (cleaned.startsWith("{") && cleaned.contains("\"thinking\""))
+        {
+            try
+            {
+                JsonObject obj = parseLenient(cleaned).getAsJsonObject();
+                if (obj.has("thinking") && !obj.get("thinking").isJsonNull())
+                {
+                    String think = obj.get("thinking").getAsString().trim();
+                    return think.isEmpty() ? null : think;
+                }
+            }
+            catch (Throwable ignored)
+            {
+                // Fall through to free-form extraction.
+            }
         }
 
         int arrayStart = cleaned.indexOf('[');
@@ -528,6 +554,48 @@ public class ResponseParser
 
         String reasoning = cleaned.substring(0, arrayStart).trim();
         return reasoning.isEmpty() ? null : reasoning;
+    }
+
+    /**
+     * Returns the storable form of an assistant response: ONLY the JSON
+     * action array, with all surrounding prose, &lt;think&gt; blocks, and
+     * code fences stripped. Used when persisting an exchange to
+     * conversation history so the LLM's own speculative prose
+     * ("the user wants me to …") cannot leak into future turns and
+     * mutate into fabricated user instructions.
+     *
+     * Returns the cleaned array text, or the original response if no
+     * array was found (so a malformed turn is still preserved verbatim
+     * for parse-error feedback).
+     */
+    public String extractStorableResponse(String response)
+    {
+        if (response == null) return null;
+        String json = extractJsonArray(response);
+        if (json == null || json.isEmpty()) return response;
+        // Make sure what we're about to keep actually looks like our action
+        // array — bare "[]" or text without an action object is treated as
+        // a parse miss; fall back to the original so the parse-error
+        // feedback path can quote it back to the LLM.
+        if (!json.contains("\"action\"")) return response;
+        return json;
+    }
+
+    /**
+     * Lenient JSON parse. Tolerates trailing commas, single quotes,
+     * unescaped control characters, and other non-strict deviations Gson's
+     * default parser rejects. Necessary because LM Studio + Qwen 9B can
+     * truncate responses at the {@code max_tokens} boundary, leaving
+     * unterminated strings; lenient mode salvages whatever's parseable
+     * up to the truncation point instead of failing the entire turn.
+     */
+    private static com.google.gson.JsonElement parseLenient(String json)
+    {
+        if (json == null) return com.google.gson.JsonNull.INSTANCE;
+        com.google.gson.stream.JsonReader reader =
+            new com.google.gson.stream.JsonReader(new java.io.StringReader(json));
+        reader.setLenient(true);
+        return JsonParser.parseReader(reader);
     }
 
     /**

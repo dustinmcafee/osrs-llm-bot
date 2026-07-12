@@ -313,19 +313,174 @@ public class ActionExecutor
         // attached to the action that triggered it.
         gameStateReader.markMessagesConsumed(gameStateReader.getCurrentMessageSequence());
 
-        StringBuilder suffix = new StringBuilder(" Game said: ");
+        // The earlier wording "OK Game said: \"...\"" was misread by the
+        // model as success — it parsed "OK" as the result and treated the
+        // engine message as supplementary. Rephrase so the model can't
+        // miss that the engine response may indicate the click didn't
+        // take effect (e.g. "I can't reach that!", "You can't attack that").
+        StringBuilder suffix = new StringBuilder(" — engine response (may indicate the action did NOT take effect): ");
         for (int i = 0; i < messages.size(); i++)
         {
             if (i > 0) suffix.append(" | ");
             suffix.append("\"").append(messages.get(i)).append("\"");
         }
 
-        String existing = result.getMessage() != null ? result.getMessage() : (result.isSuccess() ? "OK" : "");
+        // Replace bare "OK" with a more honest phrasing so the model treats
+        // it as "the click was sent" rather than "the action succeeded".
+        String existing;
+        if (result.getMessage() != null && !result.getMessage().equals("OK"))
+        {
+            existing = result.getMessage();
+        }
+        else if (result.isSuccess())
+        {
+            existing = "Click sent";
+        }
+        else
+        {
+            existing = "";
+        }
         return ActionResult.builder()
             .success(result.isSuccess())
             .actionType(result.getActionType())
             .message(existing + suffix.toString())
             .build();
+    }
+
+    /**
+     * Before executing an interact/attack/pickup action, run the pathfinder to the
+     * target and check each step for openable doors/gates. Any found are prepended
+     * to the queue so they execute first, silently, without the LLM needing to know.
+     */
+    private void preflightDoors(BotAction action)
+    {
+        try
+        {
+            // Resolve target position + player state on client thread
+            java.util.concurrent.atomic.AtomicReference<net.runelite.api.coords.WorldPoint> targetRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<net.runelite.api.coords.WorldPoint> playerRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicBoolean membersRef = new java.util.concurrent.atomic.AtomicBoolean(false);
+            java.util.concurrent.atomic.AtomicInteger agilityRef = new java.util.concurrent.atomic.AtomicInteger(1);
+
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+            clientThread.invokeLater(() -> {
+                try
+                {
+                    net.runelite.api.TileObject obj = null;
+                    if (action.getName() != null)
+                        obj = objectUtils.findNearest(client, action.getName(), null);
+                    if (obj != null)
+                        targetRef.set(obj.getWorldLocation());
+                    if (client.getLocalPlayer() != null)
+                        playerRef.set(client.getLocalPlayer().getWorldLocation());
+                    membersRef.set(client.getWorldType().contains(net.runelite.api.WorldType.MEMBERS));
+                    agilityRef.set(client.getRealSkillLevel(net.runelite.api.Skill.AGILITY));
+                }
+                finally { latch.countDown(); }
+            });
+            if (!latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
+                || targetRef.get() == null || playerRef.get() == null)
+                return;
+
+            net.runelite.api.coords.WorldPoint playerPos = playerRef.get();
+            net.runelite.api.coords.WorldPoint targetPos = targetRef.get();
+
+            if (playerPos.distanceTo(targetPos) < 2) return; // already adjacent
+
+            List<net.runelite.api.coords.WorldPoint> path = pathfinderService.getPath(
+                playerPos, targetPos, membersRef.get(), agilityRef.get());
+
+            if (path == null || path.isEmpty()) return;
+
+            // Walk the path steps looking for openable objects on each tile
+            java.util.List<BotAction> doorActions = new java.util.ArrayList<>();
+            java.util.Set<net.runelite.api.coords.WorldPoint> checked = new java.util.HashSet<>();
+
+            for (net.runelite.api.coords.WorldPoint step : path)
+            {
+                if (!checked.add(step)) continue;
+
+                java.util.concurrent.atomic.AtomicReference<String> doorNameRef =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+                java.util.concurrent.CountDownLatch stepLatch = new java.util.concurrent.CountDownLatch(1);
+
+                clientThread.invokeLater(() -> {
+                    try
+                    {
+                        net.runelite.api.Scene scene = client.getScene();
+                        net.runelite.api.Tile[][][] tiles = scene.getTiles();
+                        int plane = step.getPlane();
+                        // Convert world to scene coords
+                        int sceneX = step.getX() - client.getBaseX();
+                        int sceneY = step.getY() - client.getBaseY();
+                        if (sceneX < 0 || sceneY < 0 || sceneX >= 104 || sceneY >= 104) return;
+                        net.runelite.api.Tile tile = tiles[plane][sceneX][sceneY];
+                        if (tile == null) return;
+
+                        for (net.runelite.api.TileObject candidate : new net.runelite.api.TileObject[]{
+                            tile.getWallObject(), tile.getDecorativeObject(), tile.getGroundObject()})
+                        {
+                            if (candidate == null) continue;
+                            net.runelite.api.ObjectComposition comp =
+                                client.getObjectDefinition(candidate.getId());
+                            if (comp == null) continue;
+                            String[] actions = comp.getActions();
+                            if (actions == null) continue;
+                            for (String a : actions)
+                            {
+                                if ("Open".equalsIgnoreCase(a) || "Pass".equalsIgnoreCase(a))
+                                {
+                                    doorNameRef.set(comp.getName());
+                                    return;
+                                }
+                            }
+                        }
+                        // Also check game objects on the tile
+                        for (net.runelite.api.GameObject go : tile.getGameObjects())
+                        {
+                            if (go == null) continue;
+                            net.runelite.api.ObjectComposition comp =
+                                client.getObjectDefinition(go.getId());
+                            if (comp == null) continue;
+                            String[] actions = comp.getActions();
+                            if (actions == null) continue;
+                            for (String a : actions)
+                            {
+                                if ("Open".equalsIgnoreCase(a) || "Pass".equalsIgnoreCase(a))
+                                {
+                                    doorNameRef.set(comp.getName());
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    finally { stepLatch.countDown(); }
+                });
+
+                if (!stepLatch.await(1, java.util.concurrent.TimeUnit.SECONDS)) continue;
+
+                String doorName = doorNameRef.get();
+                if (doorName != null && !doorName.isEmpty() && !doorName.equals("null"))
+                {
+                    System.out.println("[ClaudeBot] Preflight: found openable '" + doorName + "' at " + step + " — prepending open action");
+                    BotAction openAction = new BotAction();
+                    openAction.setType(ActionType.INTERACT_OBJECT);
+                    openAction.setName(doorName);
+                    openAction.setOption("Open");
+                    doorActions.add(openAction);
+                }
+            }
+
+            // Prepend in reverse so they execute in path order
+            for (int i = doorActions.size() - 1; i >= 0; i--)
+                actionQueue.enqueueFirst(doorActions.get(i));
+        }
+        catch (Exception e)
+        {
+            System.err.println("[ClaudeBot] preflightDoors error: " + e.getMessage());
+        }
     }
 
     private ActionResult executeAction(BotAction action)
@@ -335,8 +490,10 @@ public class ActionExecutor
             case WALK_TO:
                 return WalkToAction.execute(client, humanSimulator, tileUtils, clientThread, action);
             case INTERACT_NPC:
+                preflightDoors(action);
                 return InteractNpcAction.execute(client, humanSimulator, npcUtils, clientThread, action);
             case INTERACT_OBJECT:
+                preflightDoors(action);
                 return InteractObjectAction.execute(client, humanSimulator, objectUtils, clientThread, action);
             case USE_ITEM:
                 return UseItemAction.execute(client, humanSimulator, itemUtils, clientThread, action);
@@ -345,6 +502,7 @@ public class ActionExecutor
             case DROP_ITEM:
                 return DropItemAction.execute(client, humanSimulator, itemUtils, clientThread, action);
             case PICKUP_ITEM:
+                preflightDoors(action);
                 return PickupItemAction.execute(client, humanSimulator, tileUtils, itemUtils, clientThread, action);
             case EAT_FOOD:
                 return EatFoodAction.execute(client, humanSimulator, itemUtils, clientThread, action);

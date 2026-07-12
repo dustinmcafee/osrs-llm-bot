@@ -22,6 +22,10 @@ dependencies {
     // For the dev test launcher
     testImplementation 'net.runelite:client:latest.release'
     testImplementation 'net.runelite:jshell:latest.release'
+
+    // Sideloaded companion plugins (regular jars only — not shadow, to avoid RuneLite class conflicts)
+    compileOnly files('/home/dustin/workingdir/quest-helper/build/libs/quest-helper-4.15.1.2.jar')
+    testImplementation files('/home/dustin/workingdir/quest-helper/build/libs/quest-helper-4.15.1.2.jar')
 }
 
 shadowJar {

@@ -79,13 +79,74 @@ public interface ClaudeBotConfig extends Config
     @ConfigItem(
         keyName = "maxTokens",
         name = "Max Tokens",
-        description = "Max tokens in response",
+        description = "Max tokens in response. With Structured Output + thinking enabled, the model needs headroom for both the thinking field and the actions array — 3072+ recommended.",
         section = apiSection,
         position = 3
     )
     default int maxTokens()
     {
-        return 512;
+        return 3072;
+    }
+
+    @ConfigItem(
+        keyName = "temperature",
+        name = "Temperature",
+        description = "Sampling temperature 0.0–2.0. Lower = more deterministic reasoning, recommended 0.3–0.5 for thinking models. Higher = more variety. Sent to OpenAI-compatible endpoints only.",
+        section = apiSection,
+        position = 4
+    )
+    default double temperature()
+    {
+        return 0.4;
+    }
+
+    @ConfigItem(
+        keyName = "enableThinking",
+        name = "Enable Thinking Mode",
+        description = "Inject /think into the system prompt and pass chat_template_kwargs.enable_thinking=true so Qwen3 / other reasoning models produce <think>…</think> chains. Disable for non-thinking models or to reduce token cost.",
+        section = apiSection,
+        position = 5
+    )
+    default boolean enableThinking()
+    {
+        return true;
+    }
+
+    @ConfigItem(
+        keyName = "reasoningEffort",
+        name = "Reasoning Effort",
+        description = "Sent as reasoning_effort=<value> on OpenAI-compatible requests. Some LM Studio / OpenAI builds map this to thinking depth. NONE omits the field entirely.",
+        section = apiSection,
+        position = 6
+    )
+    default ReasoningEffort reasoningEffort()
+    {
+        return ReasoningEffort.HIGH;
+    }
+
+    @ConfigItem(
+        keyName = "structuredOutput",
+        name = "Structured Output (JSON Schema)",
+        description = "Constrain the LLM's output to the action JSON schema via response_format. Eliminates parse errors, invented action names, and field drift on LM Studio / Ollama / OpenAI-compatible endpoints. Disable if the constrained sampler degrades reasoning on your model.",
+        section = apiSection,
+        position = 7
+    )
+    default boolean structuredOutput()
+    {
+        return true;
+    }
+
+    enum ReasoningEffort
+    {
+        NONE("(omit field)"),
+        LOW("low"),
+        MEDIUM("medium"),
+        HIGH("high");
+
+        private final String label;
+        ReasoningEffort(String label) { this.label = label; }
+        public String apiValue() { return this == NONE ? null : label; }
+        @Override public String toString() { return label; }
     }
 
     // --- Bot Behavior ---
@@ -241,14 +302,62 @@ public interface ClaudeBotConfig extends Config
 
     @ConfigItem(
         keyName = "nudge",
-        name = "Nudge / Hint",
-        description = "Type a hint for the bot (e.g. 'go train fishing'). Read once then auto-cleared.",
+        name = "Nudge / Hint (one-shot)",
+        description = "Type a hint for the bot (e.g. 'go train fishing'). Read once then auto-cleared. For directives that should keep firing until you stop the bot, use 'Persistent Directive' instead.",
         section = behaviorSection,
         position = 10
     )
     default String nudge()
     {
         return "";
+    }
+
+    @ConfigItem(
+        keyName = "persistentDirective",
+        name = "Persistent Directive",
+        description = "Imperative instruction prepended to EVERY prompt while non-empty. Use for steering goals the bot keeps drifting from (e.g. 'STOP fighting goblins. Walk to Lumbridge bank, deposit everything, then find monsters level 20-30 to train Defense.'). Clear this field manually when the bot is on track.",
+        section = behaviorSection,
+        position = 11
+    )
+    default String persistentDirective()
+    {
+        return "";
+    }
+
+    @ConfigItem(
+        keyName = "questHelperEnabled",
+        name = "Quest Helper Integration",
+        description = "Inject the active Quest Helper step into each prompt as [QUEST_STEP]. Requires the Quest Helper plugin to be installed and active. Has no effect if Quest Helper is not running.",
+        section = behaviorSection,
+        position = 12
+    )
+    default boolean questHelperEnabled()
+    {
+        return true;
+    }
+
+    @ConfigItem(
+        keyName = "questToTrack",
+        name = "Quest to Track",
+        description = "Quest Helper will track this quest. Select (none) to disable. Changes take effect immediately.",
+        section = behaviorSection,
+        position = 13
+    )
+    default TrackedQuest questToTrack()
+    {
+        return TrackedQuest.NONE;
+    }
+
+    @ConfigItem(
+        keyName = "loopDetectionEnabled",
+        name = "Loop Detection",
+        description = "Inject a [LOOP_DETECTED] warning when the same action sequence repeats 3 times with no XP gain AND no inventory change. Helps the LLM break out of stuck states (e.g. trying to use a quest-gated cooking range repeatedly).",
+        section = behaviorSection,
+        position = 14
+    )
+    default boolean loopDetectionEnabled()
+    {
+        return true;
     }
 
     @Range(min = 0, max = 100)

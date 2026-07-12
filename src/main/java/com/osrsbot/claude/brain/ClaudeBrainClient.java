@@ -20,6 +20,9 @@ import java.util.stream.Collectors;
 @Singleton
 public class ClaudeBrainClient
 {
+    @Inject
+    private com.osrsbot.claude.ClaudeBotConfig config;
+
     private AnthropicClient anthropicClient;
     private ExecutorService executor;
     private String model;
@@ -29,6 +32,7 @@ public class ClaudeBrainClient
 
     /** If non-empty, use OpenAI-compatible HTTP endpoint instead of Anthropic SDK */
     private String apiBaseUrl;
+    private String openAiApiKey;
 
     public void initialize(String apiKey, String model, int maxTokens, String apiBaseUrl)
     {
@@ -47,6 +51,7 @@ public class ClaudeBrainClient
         {
             // OpenAI-compatible mode — no SDK needed
             this.anthropicClient = null;
+            this.openAiApiKey = (apiKey != null) ? apiKey.trim() : "";
             // Strip trailing slash for clean URL building
             if (this.apiBaseUrl.endsWith("/"))
             {
@@ -314,7 +319,51 @@ public class ClaudeBrainClient
         requestBody.addProperty("model", model);
         requestBody.add("messages", messages);
         requestBody.addProperty("max_tokens", maxTokens);
-        requestBody.addProperty("temperature", 0.7);
+
+        // Sampling + reasoning controls. All three pulled from config each
+        // request so the user can tune them in RuneLite without restarting.
+        if (config != null)
+        {
+            requestBody.addProperty("temperature", config.temperature());
+
+            boolean isLocalEndpoint = !apiBaseUrl.isEmpty()
+                && (apiBaseUrl.startsWith("http://") || apiBaseUrl.contains("localhost") || apiBaseUrl.contains("127.0.0.1") || apiBaseUrl.matches(".*\\d+\\.\\d+\\.\\d+\\.\\d+.*"));
+
+            if (isLocalEndpoint && config.enableThinking())
+            {
+                // Qwen 3 chat template reads enable_thinking from
+                // chat_template_kwargs. LM Studio passes this through verbatim.
+                // Cloud providers (Gemini, OpenRouter, etc.) reject this field.
+                JsonObject ctk = new JsonObject();
+                ctk.addProperty("enable_thinking", true);
+                requestBody.add("chat_template_kwargs", ctk);
+            }
+
+            String effort = config.reasoningEffort() != null
+                ? config.reasoningEffort().apiValue() : null;
+            if (effort != null && isLocalEndpoint)
+            {
+                // reasoning_effort is LM Studio-specific — skip for cloud endpoints
+                requestBody.addProperty("reasoning_effort", effort);
+            }
+
+            if (config.structuredOutput())
+            {
+                // JSON-schema-constrained output. LM Studio / OpenAI-compatible
+                // endpoints feed this to a grammar-constrained sampler so
+                // every emitted token is forced onto the action schema. The
+                // model literally cannot produce invalid JSON, invent an
+                // action name, or drop the "name" field on INTERACT_OBJECT.
+                // The retry / auto-recover paths in ResponseParser remain in
+                // place as defense-in-depth in case the endpoint silently
+                // ignores the schema (older LM Studio builds, etc.).
+                requestBody.add("response_format", buildActionResponseFormat());
+            }
+        }
+        else
+        {
+            requestBody.addProperty("temperature", 0.4);
+        }
 
         // Send HTTP request
         String endpoint = apiBaseUrl + "/chat/completions";
@@ -324,6 +373,10 @@ public class ClaudeBrainClient
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setRequestProperty("Accept", "application/json");
+        if (openAiApiKey != null && !openAiApiKey.isEmpty())
+        {
+            conn.setRequestProperty("Authorization", "Bearer " + openAiApiKey);
+        }
         conn.setConnectTimeout(10000);
         conn.setReadTimeout(120000); // 2 min for slow local models
         conn.setDoOutput(true);
@@ -372,6 +425,123 @@ public class ClaudeBrainClient
         return choices.get(0).getAsJsonObject()
             .getAsJsonObject("message")
             .get("content").getAsString();
+    }
+
+    /**
+     * Builds the OpenAI {@code response_format} object that constrains the
+     * LLM's output to a JSON OBJECT containing a {@code thinking} field
+     * (so the model can still chain-of-thought) and an {@code actions}
+     * array matching the bot's action schema.
+     *
+     * <p>The wrapper-with-thinking shape was a deliberate choice over a
+     * bare array: a bare array forced the constrained sampler to suppress
+     * Qwen's {@code <think>...</think>} blocks entirely, which on a 9B
+     * reasoning model collapses planning quality. By giving the model an
+     * explicit {@code thinking} field inside the schema, it can still
+     * reason — just inside the JSON instead of around it.
+     *
+     * <p>The existing {@link #extractReasoning} parser is taught to read
+     * the {@code thinking} key when present; the existing
+     * {@link com.osrsbot.claude.brain.ResponseParser#parse} path finds
+     * the inner {@code actions} array via its scan-for-[ logic.
+     */
+    private JsonObject buildActionResponseFormat()
+    {
+        // Action name enum, sourced from the canonical ActionType list so
+        // the schema can never drift from the real enum.
+        JsonArray actionEnum = new JsonArray();
+        for (com.osrsbot.claude.action.ActionType t : com.osrsbot.claude.action.ActionType.values())
+        {
+            actionEnum.add(t.name());
+        }
+
+        // Per-action shape. Every field except `action` is optional. We list
+        // all fields the parser knows about so the model has the full
+        // vocabulary; additionalProperties=false rejects fabricated keys.
+        JsonObject itemProps = new JsonObject();
+        addProp(itemProps, "action",   "string",  actionEnum);
+        addProp(itemProps, "name",     "string",  null);
+        addProp(itemProps, "option",   "string",  null);
+        addProp(itemProps, "x",        "integer", null);
+        addProp(itemProps, "y",        "integer", null);
+        addProp(itemProps, "plane",    "integer", null);
+        addProp(itemProps, "ticks",    "integer", null);
+        addProp(itemProps, "quantity", "integer", null);
+        addProp(itemProps, "item",     "string",  null);
+        addProp(itemProps, "item1",    "string",  null);
+        addProp(itemProps, "item2",    "string",  null);
+        addProp(itemProps, "npc",      "string",  null);
+        addProp(itemProps, "object",   "string",  null);
+        addProp(itemProps, "text",     "string",  null);
+        addProp(itemProps, "goal",     "string",  null);
+
+        JsonArray itemRequired = new JsonArray();
+        itemRequired.add("action");
+
+        JsonObject itemSchema = new JsonObject();
+        itemSchema.addProperty("type", "object");
+        itemSchema.add("properties", itemProps);
+        itemSchema.add("required", itemRequired);
+        itemSchema.addProperty("additionalProperties", false);
+
+        JsonObject actionsArraySchema = new JsonObject();
+        actionsArraySchema.addProperty("type", "array");
+        actionsArraySchema.addProperty("minItems", 1);
+        actionsArraySchema.addProperty("maxItems", 5);
+        actionsArraySchema.add("items", itemSchema);
+
+        // Top-level wrapper: {"thinking": "...", "actions": [...]}
+        // maxLength on thinking caps the chain-of-thought to prevent runaway
+        // generation. Without it, Qwen 9B can emit ~8 KB of repetitive
+        // restated-plan text, hit the response token cap mid-string, and
+        // produce unterminated JSON that fails to parse — leading to a
+        // WAIT-only fallback loop and the player getting idle-kicked.
+        JsonObject thinkingProp = new JsonObject();
+        thinkingProp.addProperty("type", "string");
+        thinkingProp.addProperty("maxLength", 1200);
+
+        JsonObject rootProps = new JsonObject();
+        rootProps.add("thinking", thinkingProp);
+        rootProps.add("actions", actionsArraySchema);
+
+        JsonArray rootRequired = new JsonArray();
+        // Both required — making thinking optional caused the model to skip
+        // it on follow-on turns (we observed it inline 1-of-4 times). Forcing
+        // thinking on every turn restored the chain-of-thought behavior the
+        // 9B model needs to reason through level-gated / item-required
+        // actions like "burn willow logs at FM 20".
+        rootRequired.add("thinking");
+        rootRequired.add("actions");
+
+        JsonObject rootSchema = new JsonObject();
+        rootSchema.addProperty("type", "object");
+        rootSchema.add("properties", rootProps);
+        rootSchema.add("required", rootRequired);
+        rootSchema.addProperty("additionalProperties", false);
+
+        JsonObject jsonSchema = new JsonObject();
+        jsonSchema.addProperty("name", "actions");
+        jsonSchema.addProperty("strict", true);
+        jsonSchema.add("schema", rootSchema);
+
+        JsonObject responseFormat = new JsonObject();
+        responseFormat.addProperty("type", "json_schema");
+        responseFormat.add("json_schema", jsonSchema);
+        return responseFormat;
+    }
+
+    /** Helper: add {@code "fieldName": {"type": "..."}} to a properties
+     *  object. If {@code enumValues} is non-null, the property is also
+     *  constrained to those values. */
+    private static void addProp(JsonObject properties, String name, String type, JsonArray enumValues)
+    {
+        JsonObject p = new JsonObject();
+        p.addProperty("type", type);
+        if (enumValues != null)
+        {
+            p.add("enum", enumValues);
+        }
+        properties.add(name, p);
     }
 
     private void logRequest(List<ConversationManager.Exchange> conversationHistory, String currentState)

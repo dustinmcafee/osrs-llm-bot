@@ -1,5 +1,10 @@
 package com.osrsbot.claude.state;
 
+import com.questhelper.panel.PanelDetails;
+import com.questhelper.questhelpers.QuestHelper;
+import com.questhelper.requirements.Requirement;
+import com.questhelper.requirements.item.ItemRequirement;
+import com.questhelper.steps.QuestStep;
 import net.runelite.api.*;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
@@ -24,6 +29,12 @@ public class GameStateReader
 
     @Inject
     private ItemManager itemManager;
+
+    @Inject
+    private net.runelite.client.plugins.PluginManager pluginManager;
+
+    @Inject
+    private com.osrsbot.claude.ClaudeBotConfig config;
 
     private int scanRadius = 25;
 
@@ -392,6 +403,7 @@ public class GameStateReader
         return GameStateSnapshot.builder()
             .player(readPlayerState())
             .inventory(readInventoryState())
+            .bank(readBankState())
             .equipment(readEquipmentState())
             .nearbyNpcs(readNearbyNpcs())
             .nearbyObjects(readNearbyObjects())
@@ -399,7 +411,105 @@ public class GameStateReader
             .nearbyPlayers(readNearbyPlayers())
             .environment(readEnvironmentState())
             .timestamp(System.currentTimeMillis())
+            .questHelperStep(readQuestHelperStep())
             .build();
+    }
+
+    private String readQuestHelperStep()
+    {
+        if (config == null || !config.questHelperEnabled()) return null;
+        try
+        {
+            com.questhelper.QuestHelperPlugin qh = pluginManager.getPlugins().stream()
+                .filter(p -> p instanceof com.questhelper.QuestHelperPlugin)
+                .map(p -> (com.questhelper.QuestHelperPlugin) p)
+                .findFirst().orElse(null);
+            if (qh == null) return null;
+
+            QuestHelper quest = qh.getSelectedQuest();
+            if (quest == null) return null;
+
+            QuestStep currentStep = quest.getCurrentStep();
+            if (currentStep == null) return null;
+
+            StringBuilder sb = new StringBuilder();
+
+            // Quest name
+            sb.append(quest.getDisplayedQuestName()).append("\n");
+
+            // Find which panel (phase) contains this step, extract its header + requirements
+            List<PanelDetails> panels = quest.getPanels();
+            if (panels != null)
+            {
+                for (PanelDetails panel : panels)
+                {
+                    if (panel.contains(currentStep))
+                    {
+                        sb.append("  Phase: ").append(panel.getHeader()).append("\n");
+
+                        String phaseReqs = displayList(panel.getRequirements());
+                        if (phaseReqs != null) sb.append("  Items for this phase: ").append(phaseReqs).append("\n");
+
+                        String phaseRecs = displayList(panel.getRecommended());
+                        if (phaseRecs != null) sb.append("  Recommended: ").append(phaseRecs).append("\n");
+                        break;
+                    }
+                }
+            }
+
+            // Current step text (protected field — only field access needed here)
+            if (currentStep.getText() != null && !currentStep.getText().isEmpty())
+            {
+                sb.append("  Step: ").append(String.join(" ", currentStep.getText())).append("\n");
+            }
+
+            // All quest item requirements
+            String allItems = displayItemList(quest.getItemRequirements());
+            if (allItems != null) sb.append("  All items needed: ").append(allItems).append("\n");
+
+            // General/skill/quest requirements
+            String genReqs = displayList(quest.getGeneralRequirements());
+            if (genReqs != null) sb.append("  Requirements: ").append(genReqs).append("\n");
+
+            // Combat
+            List<String> combat = quest.getCombatRequirements();
+            if (combat != null && !combat.isEmpty())
+                sb.append("  Enemies to defeat: ").append(String.join(", ", combat)).append("\n");
+
+            // Notes
+            List<String> notes = quest.getNotes();
+            if (notes != null && !notes.isEmpty())
+                sb.append("  Notes: ").append(String.join(" ", notes)).append("\n");
+
+            String result = sb.toString().trim();
+            return result.isEmpty() ? null : result;
+        }
+        catch (Exception e)
+        {
+            return null;
+        }
+    }
+
+    private static String displayList(List<? extends Requirement> reqs)
+    {
+        if (reqs == null || reqs.isEmpty()) return null;
+        String joined = reqs.stream()
+            .filter(Objects::nonNull)
+            .map(Requirement::getDisplayText)
+            .filter(s -> s != null && !s.isBlank())
+            .collect(Collectors.joining(" | "));
+        return joined.isEmpty() ? null : joined;
+    }
+
+    private static String displayItemList(List<ItemRequirement> items)
+    {
+        if (items == null || items.isEmpty()) return null;
+        String joined = items.stream()
+            .filter(Objects::nonNull)
+            .map(ItemRequirement::getDisplayText)
+            .filter(s -> s != null && !s.isBlank())
+            .collect(Collectors.joining(" | "));
+        return joined.isEmpty() ? null : joined;
     }
 
     private PlayerState readPlayerState()
@@ -596,6 +706,51 @@ public class GameStateReader
             .items(items)
             .usedSlots(usedSlots)
             .freeSlots(28 - usedSlots)
+            .build();
+    }
+
+    /**
+     * Reads the bank's contents as last seen by the client. Returns null
+     * until the player has opened a bank at least once this session — the
+     * engine doesn't populate {@code InventoryID.BANK} eagerly. Once
+     * populated, the container persists even when the bank UI is closed,
+     * so the bot can plan against the bank inventory anywhere on the map.
+     */
+    private InventoryState readBankState()
+    {
+        ItemContainer container = client.getItemContainer(InventoryID.BANK);
+        if (container == null) return null;
+
+        Item[] containerItems = container.getItems();
+        if (containerItems == null || containerItems.length == 0) return null;
+
+        List<InventoryState.ItemSlot> items = new ArrayList<>(containerItems.length);
+        int used = 0;
+        for (int i = 0; i < containerItems.length; i++)
+        {
+            Item item = containerItems[i];
+            if (item == null) continue;
+            int id = item.getId();
+            if (id == -1 || id == 0) continue;
+            int qty = item.getQuantity();
+            if (qty <= 0) continue;
+            net.runelite.api.ItemComposition comp = itemManager.getItemComposition(id);
+            String name = comp != null ? comp.getName() : "Unknown";
+            items.add(InventoryState.ItemSlot.builder()
+                .slot(i)
+                .itemId(id)
+                .name(name)
+                .quantity(qty)
+                .build());
+            used++;
+        }
+        if (items.isEmpty()) return null;
+        return InventoryState.builder()
+            .items(items)
+            .usedSlots(used)
+            // Bank slot capacity varies (816 base + premium) — we just
+            // record the used count and don't pretend to know the cap.
+            .freeSlots(0)
             .build();
     }
 
